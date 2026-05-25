@@ -110,14 +110,17 @@
                             android:layout_height="56dp"
                             android:text="-"
                             android:textAllCaps="false"
-                            android:textColor="#000000"
+                            android:textColor="#FFFFFF"
                             android:textStyle="bold"
                             android:textSize="28sp"
                             app:backgroundTint="#C8B0F9"
                             app:cornerRadius="28dp"
-                            app:iconPadding="0dp"
+                            android:padding="0dp"
                             android:insetTop="0dp"
-                            android:insetBottom="0dp"/>
+                            android:insetBottom="0dp"
+                            android:insetLeft="0dp"
+                            android:insetRight="0dp"
+                            app:iconPadding="0dp" />
 
                         <TextView
                             android:id="@+id/txtValue"
@@ -136,14 +139,17 @@
                             android:layout_height="56dp"
                             android:text="+"
                             android:textAllCaps="false"
-                            android:textColor="#000000"
+                            android:textColor="#FFFFFF"
                             android:textStyle="bold"
                             android:textSize="20sp"
                             app:backgroundTint="#C8B0F9"
                             app:cornerRadius="28dp"
-                            app:iconPadding="0dp"
+                            android:padding="0dp"
                             android:insetTop="0dp"
-                            android:insetBottom="0dp"/>
+                            android:insetBottom="0dp"
+                            android:insetLeft="0dp"
+                            android:insetRight="0dp"
+                            app:iconPadding="0dp" />
                     </LinearLayout>
 
                     <SeekBar

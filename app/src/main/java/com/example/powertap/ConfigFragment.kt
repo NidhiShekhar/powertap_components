@@ -20,8 +20,8 @@ class ConfigFragment : Fragment() {
     private lateinit var sliderSection: LinearLayout
     private lateinit var txtValue: TextView
     private lateinit var txtInfo: TextView
-    private lateinit var btnMinus: Button
-    private lateinit var btnPlus: Button
+    private lateinit var btnMinus: View
+    private lateinit var btnPlus: View
     private lateinit var seekBar: SeekBar
 
     private var time = 60
