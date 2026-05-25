@@ -12,19 +12,15 @@
         android:padding="16dp"
         android:gravity="center_horizontal">
 
-        <!-- Stacked Badge and LCD -->
-        <FrameLayout
+        <!-- Badge and LCD (Vertical Stack) -->
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:gravity="center_horizontal"
             android:layout_marginBottom="16dp">
 
-            <com.example.powertap.TwoLineLCDView
-                android:id="@+id/lcd_view"
-                android:layout_width="match_parent"
-                android:layout_height="120dp"
-                android:layout_marginTop="20dp" />
-
-            <!-- Device Status Badge -->
+            <!-- Device Status Badge (Above) -->
             <LinearLayout
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
@@ -32,8 +28,7 @@
                 android:orientation="horizontal"
                 android:paddingHorizontal="12dp"
                 android:paddingVertical="4dp"
-                android:layout_gravity="top|center_horizontal"
-                android:elevation="4dp"
+                android:layout_marginBottom="8dp"
                 android:gravity="center_vertical">
 
                 <ImageView
@@ -41,7 +36,8 @@
                     android:layout_height="16dp"
                     android:src="@android:drawable/ic_dialog_info"
                     android:layout_marginEnd="6dp"
-                    app:tint="@color/black" />
+                    app:tint="@color/black"
+                    android:contentDescription="Info" />
 
                 <LinearLayout
                     android:layout_width="wrap_content"
@@ -59,10 +55,16 @@
                         android:layout_height="wrap_content"
                         android:text="70041dafd2ec"
                         android:textColor="@color/black"
-                        android:textSize="10sp" />
+                        android:textSize="11sp" />
                 </LinearLayout>
             </LinearLayout>
-        </FrameLayout>
+
+            <!-- LCD View (Below) -->
+            <com.example.powertap.TwoLineLCDView
+                android:id="@+id/lcd_view"
+                android:layout_width="match_parent"
+                android:layout_height="120dp" />
+        </LinearLayout>
 
         <!-- Tabbed Content Card -->
         <androidx.cardview.widget.CardView
@@ -70,7 +72,8 @@
             android:layout_height="wrap_content"
             android:layout_marginBottom="16dp"
             app:cardCornerRadius="16dp"
-            app:cardElevation="2dp">
+            app:cardElevation="2dp"
+            app:cardBackgroundColor="@color/white">
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -83,18 +86,29 @@
                     android:layout_height="wrap_content"
                     app:tabIndicatorColor="@color/tab_indicator"
                     app:tabSelectedTextColor="@color/tab_indicator"
-                    app:tabTextColor="@android:color/darker_gray"
+                    app:tabTextColor="#757575"
+                    app:tabRippleColor="@android:color/transparent"
                     app:tabMode="fixed"
-                    app:tabGravity="fill">
-                    <com.google.android.material.tabs.TabItem android:text="FULL CHARGE" />
-                    <com.google.android.material.tabs.TabItem android:text="SET TIME" />
-                    <com.google.android.material.tabs.TabItem android:text="SET UNITS" />
+                    app:tabGravity="fill"
+                    android:background="@color/white">
+                    <com.google.android.material.tabs.TabItem
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="FULL CHARGE" />
+                    <com.google.android.material.tabs.TabItem
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="SET TIME" />
+                    <com.google.android.material.tabs.TabItem
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="SET UNITS" />
                 </com.google.android.material.tabs.TabLayout>
 
                 <View
                     android:layout_width="match_parent"
                     android:layout_height="1dp"
-                    android:background="#DDDDDD" />
+                    android:background="#EEEEEE" />
 
                 <LinearLayout
                     android:layout_width="match_parent"
@@ -116,16 +130,17 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:text="FULL CHARGE"
-                        android:textSize="24sp"
+                        android:textSize="20sp"
                         android:textStyle="bold"
-                        android:textColor="@color/black" />
+                        android:textColor="#333333" />
 
                     <TextView
                         android:id="@+id/txtSubtitle"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:text="Charge to 100% capacity"
-                        android:textColor="@android:color/darker_gray" />
+                        android:textColor="#888888"
+                        android:textSize="14sp" />
 
                     <LinearLayout
                         android:id="@+id/sliderSection"

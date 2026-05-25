@@ -6,16 +6,19 @@ out
 build
 app/build
 
-# IDE - IntelliJ IDEA
+# IDE - IntelliJ IDEA / Android Studio
 .idea
 *.iml
 *.ipr
 *.iws
 
-# IDE - Android Studio
+# Android Studio specific
 *.jks
 *.keystore
 google-services.json
+captures
+.externalNativeBuild
+.cxx
 
 # Local configuration file (contains Sdk path)
 local.properties
@@ -27,7 +30,7 @@ local.properties
 .DS_Store
 Thumbs.db
 
-# Other
-captures
-.externalNativeBuild
-.cxx
+# Project specific artifacts to ignore
+*.zip
+*.tar.gz
+*.sh

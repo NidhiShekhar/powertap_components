@@ -30,7 +30,7 @@ class HomeFragment : Fragment() {
         // Initialize LCD
         lcdView.setText(
             listOf(LCDSegment("0V", 28f, Align.LEFT, 1f, true), LCDSegment("0Wh", 28f, Align.RIGHT, 1f, true)),
-            listOf(LCDSegment("9APR 12:04AM", 32f, Align.CENTER, 1f, true))
+            listOf(LCDSegment("9APR 12:04AM", 24f, Align.CENTER, 1f, true))
         )
 
         // Initialize Tabs
