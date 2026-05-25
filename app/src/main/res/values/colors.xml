@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="turquoise_blue">#40E0D0</color>
+    <color name="turquoise_dark">#008B8B</color>
+    <color name="lcd_green">#A8D5A2</color>
+    <color name="lcd_border">#3F483F</color>
+    <color name="primary_blue">#2f4a7c</color>
+    <color name="white">#FFFFFF</color>
+    <color name="black">#000000</color>
+    <color name="gray_light">#F4F6F6</color>
+    <color name="slider_bg">#EEEEEE</color>
+    <color name="tab_indicator">#2f4a7c</color>
+</resources>

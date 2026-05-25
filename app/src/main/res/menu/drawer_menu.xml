@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <group android:checkableBehavior="single">
+        <item
+            android:id="@+id/nav_home"
+            android:icon="@android:drawable/ic_menu_today"
+            android:title="Home" />
+        <item
+            android:id="@+id/nav_lcd"
+            android:icon="@android:drawable/ic_menu_view"
+            android:title="LCD Demo" />
+        <item
+            android:id="@+id/nav_config"
+            android:icon="@android:drawable/ic_menu_manage"
+            android:title="Config Panel" />
+        <item
+            android:id="@+id/nav_slider"
+            android:icon="@android:drawable/ic_menu_slideshow"
+            android:title="Slider Button" />
+        <item
+            android:id="@+id/nav_energy"
+            android:icon="@android:drawable/ic_menu_compass"
+            android:title="Energy Rate" />
+        <item
+            android:id="@+id/nav_history"
+            android:icon="@android:drawable/ic_menu_recent_history"
+            android:title="Charging History" />
+    </group>
+</menu>
