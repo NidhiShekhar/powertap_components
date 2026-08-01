@@ -16,6 +16,9 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        GatewayManager.init(this)
+        PowerTapManager.init()
+
         drawerLayout = findViewById(R.id.drawer_layout)
         val navView: NavigationView = findViewById(R.id.nav_view)
         val toolbar: MaterialToolbar = findViewById(R.id.toolbar)
@@ -30,8 +33,11 @@ class MainActivity : AppCompatActivity() {
                 R.id.nav_lcd -> replaceFragment(LCDFragment(), "LCD Demo")
                 R.id.nav_config -> replaceFragment(ConfigFragment(), "Config Panel")
                 R.id.nav_slider -> replaceFragment(SliderFragment(), "Slider Button")
-                R.id.nav_energy -> replaceFragment(PlaceholderFragment("Energy Rate"), "Energy Rate")
                 R.id.nav_history -> replaceFragment(PlaceholderFragment("Charging History"), "Charging History")
+                R.id.nav_scan -> startActivity(android.content.Intent(this, DeviceScanActivity::class.java))
+                R.id.nav_ble_test -> startActivity(android.content.Intent(this, BleTestActivity::class.java))
+                R.id.nav_mqtt_gateway -> startActivity(android.content.Intent(this, MqttActivity::class.java))
+                R.id.nav_logs -> startActivity(android.content.Intent(this, LogActivity::class.java))
             }
             drawerLayout.closeDrawer(GravityCompat.START)
             true

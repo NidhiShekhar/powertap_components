@@ -6,6 +6,8 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import androidx.fragment.app.Fragment
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
 
 class LCDFragment : Fragment() {
 
@@ -42,7 +44,41 @@ class LCDFragment : Fragment() {
 
         showIdle()
 
+        observePowerData()
+
         return view
+    }
+
+    private fun observePowerData() {
+        viewLifecycleOwner.lifecycleScope.launch {
+            PowerTapManager.powerData.collect { data ->
+                if (data != null) {
+                    updateLCD(data)
+                }
+            }
+        }
+    }
+
+    private fun updateLCD(data: PowerData) {
+        // Display power, voltage, current, energy
+        // Format them nicely
+        val vStr = "%.1fV".format(data.voltage)
+        val cStr = "%.1fA".format(data.current)
+        val pStr = "%.1fkW".format(data.power)
+        val eStr = "%.1fWh".format(data.energy)
+
+        lcd.setText(
+            listOf(
+                LCDSegment(vStr, 28f, Align.LEFT),
+                LCDSegment(cStr, 28f, Align.CENTER),
+                LCDSegment(pStr, 28f, Align.RIGHT)
+            ),
+            listOf(
+                LCDSegment("⌁", 24f, Align.LEFT),
+                LCDSegment(eStr, 24f, Align.LEFT),
+                LCDSegment("Charging", 24f, Align.RIGHT)
+            )
+        )
     }
 
     private fun showIdle() {
