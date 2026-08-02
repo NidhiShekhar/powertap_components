@@ -6,12 +6,15 @@ import com.example.powertap.contract.DeviceTransport
 import com.example.powertap.contract.ConnectionState
 import com.example.powertap.mqtt.MqttPrefs
 import com.example.powertap.mqtt.MqttTransport
+import com.example.powertap.contract.MeterData
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import org.json.JSONArray
 
 /**
  * GatewayManager is a singleton that holds the BLE and MQTT transports
@@ -29,6 +32,12 @@ object GatewayManager {
 
     private val _isBridgeEnabled = MutableStateFlow(true)
     val isBridgeEnabled: StateFlow<Boolean> = _isBridgeEnabled
+
+    private val _latestMeterData = MutableStateFlow<MeterData?>(null)
+    val latestMeterData: StateFlow<MeterData?> = _latestMeterData.asStateFlow()
+
+    private val _meterHistory = MutableStateFlow<List<MeterData>>(emptyList())
+    val meterHistory: StateFlow<List<MeterData>> = _meterHistory.asStateFlow()
 
     private var context: Context? = null
 
@@ -66,6 +75,16 @@ object GatewayManager {
             bleTransport.incoming.collect { payload ->
                 if (_isBridgeEnabled.value) {
                     LogRepository.append("Bridge: BLE -> MQTT: $payload")
+                    
+                    // Update Meter Data State
+                    parseMeterData(payload)?.let { data ->
+                        _latestMeterData.value = data
+                        val current = _meterHistory.value.toMutableList()
+                        current.add(0, data)
+                        if (current.size > 100) current.removeAt(current.size - 1)
+                        _meterHistory.value = current
+                    }
+
                     // Forward to MQTT: ACKs go to specific topic, others to general packet topic
                     if (payload.startsWith("[3,")) {
                         _mqttTransport.publishAck(payload)
@@ -83,6 +102,32 @@ object GatewayManager {
                     bleTransport.send(incoming.payload)
                 }
             }
+        }
+    }
+
+    private fun parseMeterData(payload: String): MeterData? {
+        return try {
+            val arr = JSONArray(payload)
+            if (arr.length() < 4) return null
+            
+            val messageType = arr.getString(2)
+            val dataObj = arr.getJSONObject(3)
+            
+            val meterValue = when (messageType) {
+                "MeterValues" -> dataObj.optJSONObject("meterValue")
+                "Heartbeat" -> dataObj
+                else -> null
+            } ?: return null
+
+            MeterData(
+                voltage = meterValue.optDouble("v", 0.0).toFloat() / 1000f,
+                current = meterValue.optDouble("c", 0.0).toFloat() / 1000f,
+                power = meterValue.optDouble("p", 0.0).toFloat() / 1000f,
+                energy = meterValue.optDouble("e", 0.0).toFloat() / 1000f,
+                frequency = meterValue.optDouble("f", 0.0).toFloat()
+            )
+        } catch (e: Exception) {
+            null
         }
     }
 

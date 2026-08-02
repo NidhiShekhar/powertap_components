@@ -28,6 +28,7 @@
         <activity android:name=".LogActivity" />
         <activity android:name=".MqttActivity" />
         <activity android:name=".BleTestActivity" />
+        <activity android:name=".PowerDataActivity" />
     </application>
 
 </manifest>

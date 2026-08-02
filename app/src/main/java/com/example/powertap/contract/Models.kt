@@ -20,3 +20,13 @@ data class DiscoveredDevice(
 ) {
     val displayName: String get() = name ?: "(unknown)"
 }
+
+/** Data extracted from MeterValues packets. */
+data class MeterData(
+    val voltage: Float,     // v
+    val current: Float,     // c
+    val power: Float,       // p
+    val energy: Float,      // e
+    val frequency: Float,   // f
+    val timestamp: Long = System.currentTimeMillis()
+)

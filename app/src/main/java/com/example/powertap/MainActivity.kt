@@ -37,6 +37,7 @@ class MainActivity : AppCompatActivity() {
                 R.id.nav_scan -> startActivity(android.content.Intent(this, DeviceScanActivity::class.java))
                 R.id.nav_ble_test -> startActivity(android.content.Intent(this, BleTestActivity::class.java))
                 R.id.nav_mqtt_gateway -> startActivity(android.content.Intent(this, MqttActivity::class.java))
+                R.id.nav_power_data -> startActivity(android.content.Intent(this, PowerDataActivity::class.java))
                 R.id.nav_logs -> startActivity(android.content.Intent(this, LogActivity::class.java))
             }
             drawerLayout.closeDrawer(GravityCompat.START)
