@@ -1,6 +1,7 @@
 package com.drivool.iot.powertap
 
 import android.content.Context
+import com.drivool.iot.powertap.ble.BlePrefs
 import com.drivool.iot.powertap.ble.BleTransport
 import com.drivool.iot.powertap.contract.DeviceTransport
 import com.drivool.iot.powertap.contract.ConnectionState
@@ -54,6 +55,14 @@ object GatewayManager {
         if (_bleTransport == null) {
             _bleTransport = BleTransport(context.applicationContext, log = LogRepository::append)
             setupBridge()
+
+            // Auto-connect BLE if enabled and last device exists
+            if (BlePrefs.isAutoConnectEnabled(context)) {
+                BlePrefs.getLastDeviceAddress(context)?.let { lastAddr ->
+                    LogRepository.append("Gateway: Auto-connecting BLE to $lastAddr...")
+                    _bleTransport?.startScan(lastAddr)
+                }
+            }
             
             // Auto-connect MQTT if config exists
             val config = MqttPrefs.load(context)
@@ -101,6 +110,11 @@ object GatewayManager {
                     if (address != null) {
                         LogRepository.append("Bridge: BLE Connected ($address)")
                         
+                        // Save for auto-connect
+                        val deviceName = bleTransport.discoveredDevices.value
+                            .find { it.address == address }?.name
+                        context?.let { BlePrefs.saveLastDevice(it, address, deviceName) }
+
                         // Fallback: Guess ID from BLE Address (MAC)
                         // Note: ESP32 BLE MAC is often Base MAC + 1. 
                         // If BLE ends in :DD, the Device ID (Base MAC) is likely ...DC

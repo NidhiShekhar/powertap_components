@@ -10,6 +10,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.ArrayAdapter
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -22,6 +23,7 @@ import androidx.core.app.ActivityCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import com.drivool.iot.powertap.ble.BlePrefs
 import com.drivool.iot.powertap.contract.ConnectionState
 import com.drivool.iot.powertap.contract.DeviceTransport
 import com.drivool.iot.powertap.contract.DiscoveredDevice
@@ -38,6 +40,7 @@ class BleTestActivity : AppCompatActivity() {
     private lateinit var bleIncomingAdapter: ArrayAdapter<String>
     private lateinit var bleOutgoingAdapter: ArrayAdapter<String>
     private lateinit var deviceListAdapter: ArrayAdapter<String>
+    private lateinit var knownDevicesAdapter: ArrayAdapter<String>
     
     private lateinit var manualPacketInput: EditText
     private var discoveredDevicesList: List<DiscoveredDevice> = emptyList()
@@ -49,6 +52,7 @@ class BleTestActivity : AppCompatActivity() {
         setContentView(buildUi())
         observeTransport()
         checkPermissions()
+        transport.startScan() // Start scanning immediately on open
     }
 
     private fun checkPermissions() {
@@ -120,6 +124,33 @@ class BleTestActivity : AppCompatActivity() {
         scroll.addView(content)
 
         val wrap = LinearLayout.LayoutParams(-1, -2).apply { topMargin = 8; bottomMargin = 8 }
+
+        // Auto Connect Toggle
+        val autoConnectCheck = CheckBox(this).apply {
+            text = "Auto Connect to Last Device"
+            isChecked = BlePrefs.isAutoConnectEnabled(this@BleTestActivity)
+            setOnCheckedChangeListener { _, isChecked ->
+                BlePrefs.setAutoConnectEnabled(this@BleTestActivity, isChecked)
+            }
+        }
+        content.addView(autoConnectCheck)
+
+        // Known Devices Section
+        content.addView(TextView(this).apply { text = "Known Devices (Previous)"; textSize = 14f; setTextColor(Color.GRAY) })
+        knownDevicesAdapter = ArrayAdapter(this, android.R.layout.simple_list_item_1)
+        
+        val knownListView = ListView(this).apply {
+            adapter = knownDevicesAdapter
+            layoutParams = LinearLayout.LayoutParams(-1, 250)
+            setOnItemClickListener { _, _, position, _ ->
+                val known = BlePrefs.getKnownDevices(this@BleTestActivity)
+                known.getOrNull(position)?.let { transport.connect(it.second) }
+            }
+        }
+        content.addView(knownListView)
+        updateKnownDevices() // Update after adapter is created and attached
+
+        content.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(1, 20) })
 
         // Device List Section
         content.addView(TextView(this).apply { text = "Discovered Devices (Click to connect)"; textSize = 14f; setTextColor(Color.GRAY) })
@@ -239,6 +270,12 @@ class BleTestActivity : AppCompatActivity() {
         return root
     }
 
+    private fun updateKnownDevices() {
+        val known = BlePrefs.getKnownDevices(this)
+        knownDevicesAdapter.clear()
+        knownDevicesAdapter.addAll(known.map { "${it.first ?: "Unknown"} (${it.second})" })
+    }
+
     private fun createLogAdapter() = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, mutableListOf()) {
         override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
             val v = super.getView(position, convertView, parent)
@@ -260,6 +297,7 @@ class BleTestActivity : AppCompatActivity() {
                         if (state == ConnectionState.Connected) {
                             connectToggleButton.visibility = View.VISIBLE
                             scanButton.visibility = View.GONE
+                            updateKnownDevices()
                         } else {
                             connectToggleButton.visibility = View.GONE
                             scanButton.visibility = View.VISIBLE

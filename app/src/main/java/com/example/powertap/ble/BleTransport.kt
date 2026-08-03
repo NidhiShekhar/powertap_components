@@ -59,6 +59,7 @@ class BleTransport(
     private var gatt: BluetoothGatt? = null
     private var dataChar: BluetoothGattCharacteristic? = null
     private var scanning = false
+    private var targetAddress: String? = null
 
     private fun has(permission: String): Boolean =
         ActivityCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
@@ -81,6 +82,11 @@ class BleTransport(
             _discoveredDevices.value =
                 if (idx == -1) current + entry
                 else current.toMutableList().also { it[idx] = entry }
+
+            if (targetAddress != null && device.address == targetAddress) {
+                log("Auto-connecting to target: ${device.address}")
+                connect(device.address)
+            }
         }
 
         override fun onScanFailed(errorCode: Int) {
@@ -90,7 +96,7 @@ class BleTransport(
         }
     }
 
-    override fun startScan() {
+    override fun startScan(targetAddress: String?) {
         val scanner = adapter?.bluetoothLeScanner
         if (adapter == null || !adapter.isEnabled || scanner == null) {
             log("Enable Bluetooth before scanning")
@@ -101,10 +107,10 @@ class BleTransport(
             return
         }
         _discoveredDevices.value = emptyList()
+        this.targetAddress = targetAddress
 
         val filters = listOf(
             ScanFilter.Builder().setServiceUuid(ParcelUuid(PtContract.SERVICE_UUID)).build(),
-            ScanFilter.Builder().setDeviceName(PtContract.DEVICE_NAME).build(),
         )
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
@@ -127,6 +133,7 @@ class BleTransport(
             scanner.stopScan(scanCallback)
         } catch (e: SecurityException) { }
         scanning = false
+        targetAddress = null
     }
 
     override fun connect(address: String) {

@@ -23,7 +23,7 @@ interface DeviceTransport {
     /** Payloads sent to the device. */
     val outgoing: SharedFlow<String>
 
-    fun startScan()
+    fun startScan(targetAddress: String? = null)
     fun stopScan()
     fun connect(address: String)
     fun disconnect()
