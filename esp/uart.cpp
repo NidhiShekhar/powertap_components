@@ -41,8 +41,10 @@ bool MCU_Cmd_Enqueue(uint8_t cmd, const uint8_t *payload, uint8_t length)
       LcdDisCommand *pLCDCmd = (LcdDisCommand* )payload;
       //D_PRINT("LCD Message: %d , %s", pLCDCmd->row, pLCDCmd->text );
   }
-  if (gCmdQueue.count >= CMD_QUEUE_DEPTH)
+  if (gCmdQueue.count >= CMD_QUEUE_DEPTH) {
+    Serial.print("Q!");
     return false;
+  }
 
   if (length > RX_BUFFER_SIZE || length <= 0)
     return false;
@@ -50,8 +52,10 @@ bool MCU_Cmd_Enqueue(uint8_t cmd, const uint8_t *payload, uint8_t length)
   uint8_t *buf = NULL;
   if (length > 0) {
     buf = (uint8_t *)malloc(length);
-    if (!buf)
+    if (!buf) {
+      Serial.print("M!");
       return false;
+    }
     memcpy(buf, payload, length);
   }
 

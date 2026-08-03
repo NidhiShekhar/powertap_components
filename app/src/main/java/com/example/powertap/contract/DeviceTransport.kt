@@ -1,4 +1,4 @@
-package com.example.powertap.contract
+package com.drivool.iot.powertap.contract
 
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow

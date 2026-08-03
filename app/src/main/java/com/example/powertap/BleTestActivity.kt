@@ -1,4 +1,4 @@
-package com.example.powertap
+package com.drivool.iot.powertap
 
 import android.Manifest
 import android.content.pm.PackageManager
@@ -22,10 +22,9 @@ import androidx.core.app.ActivityCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
-import com.example.powertap.contract.ConnectionState
-import com.example.powertap.contract.DeviceTransport
-import com.example.powertap.contract.DiscoveredDevice
-import kotlinx.coroutines.flow.collect
+import com.drivool.iot.powertap.contract.ConnectionState
+import com.drivool.iot.powertap.contract.DeviceTransport
+import com.drivool.iot.powertap.contract.DiscoveredDevice
 import kotlinx.coroutines.launch
 
 class BleTestActivity : AppCompatActivity() {

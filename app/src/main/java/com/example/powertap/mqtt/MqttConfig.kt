@@ -1,6 +1,6 @@
-package com.example.powertap.mqtt
+package com.drivool.iot.powertap.mqtt
 
-import com.example.powertap.BuildConfig
+import com.drivool.iot.powertap.BuildConfig
 
 /** Broker connection settings (defaults from build.gradle). */
 data class MqttConfig(

@@ -1,4 +1,4 @@
-package com.example.powertap
+package com.drivool.iot.powertap
 
 import android.os.Bundle
 import android.view.Gravity

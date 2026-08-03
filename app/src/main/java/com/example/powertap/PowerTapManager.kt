@@ -1,10 +1,10 @@
-package com.example.powertap
+package com.drivool.iot.powertap
 
 import android.content.Context
-import com.example.powertap.ble.BleTransport
-import com.example.powertap.contract.ConnectionState
-import com.example.powertap.mqtt.MqttConfig
-import com.example.powertap.mqtt.MqttTransport
+import com.drivool.iot.powertap.ble.BleTransport
+import com.drivool.iot.powertap.contract.ConnectionState
+import com.drivool.iot.powertap.mqtt.MqttConfig
+import com.drivool.iot.powertap.mqtt.MqttTransport
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob

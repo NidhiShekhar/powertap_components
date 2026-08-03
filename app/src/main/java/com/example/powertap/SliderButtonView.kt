@@ -1,4 +1,4 @@
-package com.example.powertap
+package com.drivool.iot.powertap
 
 import android.content.Context
 import android.graphics.*
@@ -22,6 +22,7 @@ class SliderButtonView @JvmOverloads constructor(
 
     private var dragging = false
     private var active = true
+    val isActive: Boolean get() = active
     private var sliderText = "Device is offline"
     private var showLoader = false
     private var currentState = "LEFT"
@@ -40,15 +41,17 @@ class SliderButtonView @JvmOverloads constructor(
         super.onDraw(canvas)
         handleRadius = height / 2f - 6f
         if (handleX == 0f) {
-            handleX = handleRadius + 6f
+            handleX = if (currentState == "LEFT") handleRadius + 6f else width - handleRadius - 6f
         }
         val grooveRect = RectF(0f, 0f, width.toFloat(), height.toFloat())
 
         bgPaint.shader = null
-        if (currentState == "RIGHT") {
-            bgPaint.color = Color.parseColor("#F57C20") // Orange when online
+        if (!active) {
+            bgPaint.color = Color.GRAY
+        } else if (currentState == "RIGHT") {
+            bgPaint.color = Color.parseColor("#F57C20") // Orange
         } else {
-            bgPaint.color = Color.parseColor("#15A615") // Green initially/offline
+            bgPaint.color = Color.parseColor("#15A615") // Green
         }
         
         bgPaint.setShadowLayer(8f, 0f, 4f, Color.parseColor("#33000000"))
@@ -57,7 +60,7 @@ class SliderButtonView @JvmOverloads constructor(
         val corner = height / 2f
         canvas.drawRoundRect(grooveRect, corner, corner, bgPaint)
 
-        textPaint.color = Color.WHITE // Better contrast on green/orange
+        textPaint.color = Color.WHITE
         textPaint.textSize = height * 0.25f
         textPaint.isFakeBoldText = true
 
@@ -70,7 +73,7 @@ class SliderButtonView @JvmOverloads constructor(
         canvas.drawCircle(handleX, height / 2f, handleRadius, handleShadowPaint)
         
         handlePaint.shader = null
-        handlePaint.color = Color.WHITE
+        handlePaint.color = if (active) Color.WHITE else Color.parseColor("#DDDDDD")
         canvas.drawCircle(handleX, height / 2f, handleRadius, handlePaint)
 
         val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -81,7 +84,7 @@ class SliderButtonView @JvmOverloads constructor(
         canvas.drawCircle(handleX, height / 2f, handleRadius - 2f, ringPaint)
 
         val arrowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = if (currentState == "RIGHT") Color.parseColor("#F57C20") else Color.parseColor("#15A615")
+            color = if (!active) Color.GRAY else if (currentState == "RIGHT") Color.parseColor("#F57C20") else Color.parseColor("#15A615")
             strokeWidth = 6f
             style = Paint.Style.FILL_AND_STROKE
             strokeCap = Paint.Cap.ROUND
@@ -106,7 +109,7 @@ class SliderButtonView @JvmOverloads constructor(
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        // if (!active) return false // Removed to allow sliding even if offline for demo
+        if (!active) return false
         when (event.action) {
             MotionEvent.ACTION_DOWN -> {
                 if (event.x >= handleX - handleRadius * 1.5f && event.x <= handleX + handleRadius * 1.5f) {
@@ -126,12 +129,12 @@ class SliderButtonView @JvmOverloads constructor(
                     if (handleX > width * 0.7f) {
                         currentState = "RIGHT"
                         handleX = width - handleRadius - 6f
-                        sliderText = "Device is online"
+                        sliderText = "Slide to Stop Charging"
                         onSlideRight?.invoke()
                     } else {
                         currentState = "LEFT"
                         handleX = handleRadius + 6f
-                        sliderText = "Device is offline"
+                        sliderText = "Slide to Start Charging"
                         onSlideLeft?.invoke()
                     }
                     invalidate()
@@ -142,8 +145,19 @@ class SliderButtonView @JvmOverloads constructor(
     }
 
     fun activate(flag: Boolean) {
+        android.util.Log.d("SliderButtonView", "activate($flag), currentActive=$active")
+        val wasActive = active
         active = flag
-        sliderText = if (active) "Slide to start" else "Device is offline"
+        if (!active) {
+            sliderText = "Device is Offline"
+            currentState = "LEFT"
+            handleX = 0f // Will be reset to left in onDraw
+        } else if (!wasActive) {
+            // Only reset text/position if we were previously offline
+            sliderText = if (currentState == "LEFT") "Slide to Start Charging" else "Slide to Stop Charging"
+            // Reset handleX so onDraw can position it correctly based on currentState
+            handleX = 0f
+        }
         invalidate()
     }
 

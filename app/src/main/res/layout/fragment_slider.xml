@@ -82,7 +82,7 @@
         android:layout_height="1dp"
         android:background="#777777"/>
 
-    <com.example.powertap.SliderButtonView
+    <com.drivool.iot.powertap.SliderButtonView
         android:id="@+id/slider"
         android:layout_width="320dp"
         android:layout_height="60dp"

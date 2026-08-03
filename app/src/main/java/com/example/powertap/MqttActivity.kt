@@ -1,4 +1,4 @@
-package com.example.powertap
+package com.drivool.iot.powertap
 
 import android.graphics.Color
 import android.os.Bundle
@@ -18,11 +18,11 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
-import com.example.powertap.contract.ConnectionState
-import com.example.powertap.contract.PtContract
-import com.example.powertap.mqtt.MqttConfig
-import com.example.powertap.mqtt.MqttPrefs
-import com.example.powertap.mqtt.MqttTransport
+import com.drivool.iot.powertap.contract.ConnectionState
+import com.drivool.iot.powertap.contract.PtContract
+import com.drivool.iot.powertap.mqtt.MqttConfig
+import com.drivool.iot.powertap.mqtt.MqttPrefs
+import com.drivool.iot.powertap.mqtt.MqttTransport
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 

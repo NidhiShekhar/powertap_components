@@ -35,7 +35,7 @@
 #define COMMAND_ERROR         4
 
 #define QUEUE_SIZE            5
-#define MAX_RETRY_COUNT       10
+#define MAX_RETRY_COUNT       100
 #define DATA_SIZE             160
 #define MQTT_BUFFER_SIZE      512
 #define RETRY_DELAY_MS        5000
@@ -133,6 +133,7 @@ extern POWER_TAP_FLAGS gFlags;
 extern Charger_Status gStatus;
 extern uint8_t gDeviceId[13];
 extern uint8_t gRxBuf[MQTT_BUFFER_SIZE];
+extern SemaphoreHandle_t xRadioBufMutex;
 
 extern uint32_t giStartEnergy;
 extern uint32_t giRelayOnTime;

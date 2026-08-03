@@ -1,7 +1,7 @@
-package com.example.powertap.mqtt
+package com.drivool.iot.powertap.mqtt
 
-import com.example.powertap.contract.ConnectionState
-import com.example.powertap.contract.PtContract
+import com.drivool.iot.powertap.contract.ConnectionState
+import com.drivool.iot.powertap.contract.PtContract
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -76,12 +76,15 @@ class MqttTransport(
                 subscribedDeviceId = id
 
                 mqtt.subscribe(PtContract.TOPIC_COMMAND, PtContract.MQTT_QOS).waitForCompletion(10_000)
+                log("Subscribed to global command topic")
 
                 if (id != null) {
                     val cmdTopic = PtContract.topicCommand(id)
                     val ackTopic = PtContract.topicAck(id)
                     mqtt.subscribe(cmdTopic, PtContract.MQTT_QOS).waitForCompletion(5_000)
+                    log("Subscribed to $cmdTopic")
                     mqtt.subscribe(ackTopic, PtContract.MQTT_QOS).waitForCompletion(5_000)
+                    log("Subscribed to $ackTopic")
                 }
 
                 _connectionState.value = ConnectionState.Connected
@@ -134,14 +137,23 @@ class MqttTransport(
     private suspend fun publishBlocking(topic: String, payload: String): Boolean =
         withContext(Dispatchers.IO) {
             val mqtt = client
-            if (mqtt == null || !mqtt.isConnected) return@withContext false
+            if (mqtt == null) {
+                log("MQTT Publish failed: Client is null")
+                return@withContext false
+            }
+            if (!mqtt.isConnected) {
+                log("MQTT Publish failed: Client not connected")
+                return@withContext false
+            }
             try {
                 val msg = MqttMessage(payload.toByteArray(Charsets.UTF_8)).apply {
                     qos = PtContract.MQTT_QOS
                 }
+                log("MQTT Publishing to $topic: $payload")
                 mqtt.publish(topic, msg).waitForCompletion(10_000)
                 true
             } catch (e: Exception) {
+                log("MQTT Publish error: ${e.message}")
                 false
             }
         }
@@ -155,7 +167,11 @@ class MqttTransport(
 
         override fun messageArrived(topic: String, message: MqttMessage) {
             val payload = String(message.payload, Charsets.UTF_8)
-            _incoming.tryEmit(MqttIncoming(topic, payload))
+            log("MQTT Received on $topic: $payload")
+            val success = _incoming.tryEmit(MqttIncoming(topic, payload))
+            if (!success) {
+                log("Warning: MQTT incoming buffer full, dropping message")
+            }
         }
 
         override fun deliveryComplete(token: IMqttDeliveryToken?) { }

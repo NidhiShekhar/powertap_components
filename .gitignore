@@ -34,3 +34,10 @@ Thumbs.db
 *.zip
 *.tar.gz
 *.sh
+
+Apps/app.html
+Apps/powertap_apis.js
+Apps/powertap_const.js
+
+test cases
+google-services.json

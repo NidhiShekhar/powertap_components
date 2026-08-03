@@ -1,4 +1,4 @@
-package com.example.powertap
+package com.drivool.iot.powertap
 
 import android.Manifest
 import android.content.pm.PackageManager
@@ -11,7 +11,7 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.lifecycle.lifecycleScope
-import com.example.powertap.contract.DiscoveredDevice
+import com.drivool.iot.powertap.contract.DiscoveredDevice
 import kotlinx.coroutines.launch
 
 class DeviceScanActivity : AppCompatActivity() {

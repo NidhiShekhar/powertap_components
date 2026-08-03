@@ -500,14 +500,22 @@ void MeterValues_Request(uint8_t *ptr)
 
 void DataTransfer_Request(uint8_t *ptr)
 {
-  char buf[DATA_SIZE];
+  char buf[DATA_SIZE] = {0};
   bool response = 0;
-  getJsonStringField((const char *)ptr, "data", buf, sizeof(buf));
+  // Use the already parsed JSON document instead of gRxBuf
+  JsonArray arrPacket = mJSONDocManager.as<JsonArray>();
+  if (!arrPacket.isNull() && arrPacket.size() >= 4 && arrPacket[0] == COMMAND_REQUEST) {
+    JsonObject payload = arrPacket[3];
+    const char* dataStr = payload["data"];
+    if (dataStr) {
+      strncpy(buf, dataStr, sizeof(buf) - 1);
+    }
+  }
   memset(gDataBuf, 0, DATA_SIZE);
 
   if (strstr((char *)buf, "GET")) {
     if ((strstr((char *)buf, "RCONF")) || (strstr((char *)buf, "INFO"))) {
-      sprintf((char*)gDataBuf, "{\"HWVER\":\"%s\",\"HWVER\":\"%s\"}", HW_VER, FW_VER);
+      sprintf((char*)gDataBuf, "{\"HWVER\":\"%s\",\"FWVER\":\"%s\"}", HW_VER, FW_VER);
     }
     else if (strstr((char *)buf, "T1")) {
       sprintf((char*)gDataBuf, "{\"HeartBeatInterval\":%u}", gHeartBeatInterval);
@@ -603,8 +611,14 @@ void DataTransfer_Request(uint8_t *ptr)
 
 void BootNotification_Response(uint8_t *ptr)
 {
-  if (strstr((char *)ptr, "Accepted")) {
-    int interval = getJsonIntValue((const char *)ptr, "interval");
+ JsonArray arrPacket = mJSONDocManager.as<JsonArray>();
+  if (arrPacket.size() < 3) return;
+
+  JsonObject payload = arrPacket[2];
+  const char* status = payload["status"];
+
+  if (status && strstr(status, "Accepted")) {
+    int interval = payload["interval"] | 0;
     if (interval > 0) {
       gHeartBeatInterval = (uint8_t)interval;
       DEBUG_PRINT(DEBUG_FULL, "BootNotification Accepted, interval=%d", gHeartBeatInterval);
@@ -618,17 +632,35 @@ void BootNotification_Response(uint8_t *ptr)
 
 void Heartbeat_Response(uint8_t *ptr)
 {
-  char buf[64];
-  size_t len = getJsonStringField((const char *)ptr, "currentTime", buf, sizeof(buf));
-  MCU_Cmd_Enqueue(CMD_HEARTBEAT, (const uint8_t*)&buf[0], len);
+  JsonArray arrPacket = mJSONDocManager.as<JsonArray>();
+  if (arrPacket.size() < 3) return;
 
+  JsonObject payload = arrPacket[2];
+  const char* currentTime = payload["currentTime"];
 
-  if (DecodeCurrentTime((const char*)ptr, &gHeartBeatTime)) {
-    gHeartBeatReceivedSystemMillis = millis();
-    DEBUG_PRINT(DEBUG_FULL, "Parsed Heartbeat currentTime => %04d-%02d-%02d %02d:%02d:%02d.%03d",
-                    gHeartBeatTime.year, gHeartBeatTime.month, gHeartBeatTime.day, gHeartBeatTime.hour, gHeartBeatTime.minute, gHeartBeatTime.second, gHeartBeatTime.millisecond);
-  } else {
-    DEBUG_PRINT(DEBUG_FULL, "Parsed Heartbeat currentTime Failed");
+  if (currentTime) {
+    MCU_Cmd_Enqueue(CMD_HEARTBEAT, (const uint8_t*)currentTime, strlen(currentTime));
+
+    // Instead of using corrupted gRxBuf (ptr), parse currentTime from JSON
+    int y, m, d, h, min, s, ms = 0;
+    int parsed = sscanf(currentTime, "%d-%d-%dT%d:%d:%d.%dZ",
+                        &y, &m, &d, &h, &min, &s, &ms);
+
+    if (parsed >= 6) {
+      gHeartBeatTime.year = y;
+      gHeartBeatTime.month = m;
+      gHeartBeatTime.day = d;
+      gHeartBeatTime.hour = h;
+      gHeartBeatTime.minute = min;
+      gHeartBeatTime.second = s;
+      gHeartBeatTime.millisecond = (parsed == 7) ? ms : 0;
+
+      gHeartBeatReceivedSystemMillis = millis();
+      DEBUG_PRINT(DEBUG_FULL, "Parsed Heartbeat currentTime => %04d-%02d-%02d %02d:%02d:%02d.%03d",
+                      gHeartBeatTime.year, gHeartBeatTime.month, gHeartBeatTime.day, gHeartBeatTime.hour, gHeartBeatTime.minute, gHeartBeatTime.second, gHeartBeatTime.millisecond);
+    } else {
+      DEBUG_PRINT(DEBUG_FULL, "Parsed Heartbeat currentTime Failed from JSON");
+    }
   }
 }
 
@@ -643,15 +675,15 @@ void DataTransfer_Response(uint8_t *ptr)
 }
 
 
-void RemoteStart_Request(uint8_t *ptr)
-{
-  DEBUG_PRINT(DEBUG_MIN, "RemoteStart_Request %s", ptr);
-}
+// void RemoteStart_Request(uint8_t *ptr)
+// {
+//   DEBUG_PRINT(DEBUG_MIN, "RemoteStart_Request %s", ptr);
+// }
 
-void RemoteStop_Request(uint8_t *ptr)
-{
-  DEBUG_PRINT(DEBUG_MIN, "RemoteStop_Request %s", ptr);
-}
+// void RemoteStop_Request(uint8_t *ptr)
+// {
+//   DEBUG_PRINT(DEBUG_MIN, "RemoteStop_Request %s", ptr);
+// }
 
 
 String formatISO8601(uint64_t elapsedMillis) {
@@ -670,13 +702,17 @@ String formatISO8601(uint64_t elapsedMillis) {
   uint32_t remainingMillis = (uint32_t)(elapsedMillis % 1000);
   
   time_t finalSeconds = baseSeconds + extraSeconds;
-
+    struct tm *finalTime = gmtime(&finalSeconds);
+  if (finalTime == NULL) {
+    DEBUG_PRINT(DEBUG_MIN, "Error: gmtime returned NULL for finalSeconds=%lld", (long long)finalSeconds);
+    return String("");
+  }
   // 3. Handle Millisecond carry-over (optional)
   // If your gHeartBeatTime.millisecond + remainingMillis > 1000, 
   // mktime doesn't see that, but for standard ISO8601, we usually just focus on seconds.
   
   // 4. Convert back to broken-down time
-  struct tm *finalTime = gmtime(&finalSeconds);
+
 
   // 5. Format into the buffer
   char isoBuffer[30];
@@ -727,7 +763,7 @@ String composeRemoteStopResponse()
 
   // 3. Create and add a nested object at Index 3
   JsonObject payload = arrPacket.createNestedObject();
-    payload["transactionId"] =  (gDeviceState.strTID == 0) ?  "" : gDeviceState.strTID ;
+    payload["transactionId"] =  (gDeviceState.strTID[0] == '\0') ?  "" : gDeviceState.strTID ;
     payload["meterStop"] = gMetroData.energyActive + gDeviceState.iEnergy;    
     payload["reason"] =  gDeviceState.iStopReason;
     payload["timestamp"] = formatISO8601(millis() - gHeartBeatReceivedSystemMillis);              
@@ -811,10 +847,7 @@ static void Transmit_TaskHandler(void)
   {
     gRetryCount++;
     if (gRetryCount >= MAX_RETRY_COUNT) {
-      DEBUG_PRINT(DEBUG_MIN, "/--------------------------------------------------------------/");
-      DEBUG_PRINT(DEBUG_MIN, "System reboot: maximum retry limit reached.");
-      DEBUG_PRINT(DEBUG_MIN, "/--------------------------------------------------------------/");
-      DEBUG_PRINT(DEBUG_MIN, "\n\n\n");
+      DEBUG_PRINT(DEBUG_MIN, "Max retry reached. rebooting...");
       delay(2000);
       ESP.restart();
     } else {
@@ -823,7 +856,7 @@ static void Transmit_TaskHandler(void)
       gMqttCmd[gActiveCmd->cmd].request(txBuf);
       SendData(txBuf);
       DEBUG_PRINT(DEBUG_MIN, "TX Message => %s", (char *)txBuf);
-      DEBUG_PRINT(DEBUG_MIN, "Retry Count => %d", (char *)gRetryCount);
+      DEBUG_PRINT(DEBUG_MIN, "Retry Count => %d", gRetryCount);
 
     }
   }
@@ -869,24 +902,44 @@ void stopPowerTap(StopReason reason){
 static void Receive_TaskHandler(void)
 {
 
-    deserializeJson(mJSONDocManager, (char *)gRxBuf);
+    DeserializationError error = deserializeJson(mJSONDocManager, (char *)gRxBuf);
+    if (error) {
+        DEBUG_PRINT(DEBUG_MIN, "JSON Parsing Failed: %s", error.c_str());
+        return;
+    }
+
+    //deserializeJson(mJSONDocManager, (char *)gRxBuf);
     JsonArray arrPacket = mJSONDocManager.as<JsonArray>();
+
+    if (arrPacket.isNull() || arrPacket.size() < 2) {
+        DEBUG_PRINT(DEBUG_MIN, "Invalid JSON Packet Format");
+        return;
+    }
 
     //DEBUG_PRINT(DEBUG_MIN, "Parsed JSON array size %d", arrPacket.size());
     uint8_t frameType = arrPacket[0];
 
-    uint64_t msgId = 0L;
+    uint64_t msgId = 0;
 
-    if (sscanf(arrPacket[1], "%lld", &msgId) == 1) { // Check if one item was successfully read
-         // DEBUG_PRINT(DEBUG_MIN, "msgId %lld, frameType: %d", msgId, frameType ); 
+    // if (sscanf(arrPacket[1], "%lld", &msgId) == 1) { // Check if one item was successfully read
+    //      // DEBUG_PRINT(DEBUG_MIN, "msgId %lld, frameType: %d", msgId, frameType ); 
+    // }
+if (arrPacket[1].is<const char*>()) {
+        msgId = strtoull(arrPacket[1].as<const char*>(), NULL, 10);
+    } else {
+        msgId = arrPacket[1].as<uint64_t>();
     }
-
 
   DEBUG_PRINT(DEBUG_MIN, "msgId %lld, frameType: %d ", msgId, frameType); 
 
   switch (frameType)
   {
     case COMMAND_RESPONSE:
+      if (gActiveCmd == NULL) {
+        DEBUG_PRINT(DEBUG_MIN, "RX Response ignored (No active cmd)");
+        return;
+      }
+
       if (msgId != gActiveCmd->messageId) {
         DEBUG_PRINT(DEBUG_MIN, "RX msgId mismatch RX=%llu EXP=%llu",
                           msgId, gActiveCmd->messageId);
@@ -904,7 +957,7 @@ static void Receive_TaskHandler(void)
 
     case COMMAND_ERROR:
       DEBUG_PRINT(DEBUG_MIN, "Server ERROR => %s", gRxBuf);
-      if ((gActiveCmd) && msgId == gActiveCmd->messageId) {
+      if (gActiveCmd && msgId == gActiveCmd->messageId) {
         RadioCmd_Dequeue();
         gActiveCmd = NULL;
         gTxState = TX_IDLE;
@@ -981,7 +1034,13 @@ void Wireless_Communication_Handler(void)
 {
   if (CheckReceiverStatus() == true)
   {
-    Receive_TaskHandler();
+    //Receive_TaskHandler();
+
+    if (xRadioBufMutex != NULL && xSemaphoreTake(xRadioBufMutex, (TickType_t)100) == pdTRUE) {
+      Receive_TaskHandler();
+      gFlags.RadioRx = false; // Clear flag only after successful processing
+      xSemaphoreGive(xRadioBufMutex);
+    }
   }
 
   Transmit_TaskHandler();
@@ -1008,8 +1067,8 @@ void performFotaUpdate(void)
   WiFiClient otaclient;
   HTTPClient http;
 
-  DEBUG_PRINT(DEBUG_MIN, "Checking for firmware updates...");
-  Serial1.println("FOTA Starting");
+  //DEBUG_PRINT(DEBUG_MIN, "Checking for firmware updates...");
+  Serial1.println("FOTA...");
   
   if (http.begin(otaclient, (const char *)gFotaURL)) {
     int httpCode = http.GET();
@@ -1020,7 +1079,7 @@ void performFotaUpdate(void)
       if (contentLength > 0) {
         if (Update.begin(contentLength)) {
           DEBUG_PRINT(DEBUG_MIN, "Starting OTA update...");
-          Serial1.println("FOTA Downloading");
+          Serial1.println("Downloading");
           size_t written = Update.writeStream(otaclient);
           if (written == contentLength) {
             DEBUG_PRINT(DEBUG_MIN, "OTA write complete.");
@@ -1031,7 +1090,7 @@ void performFotaUpdate(void)
           if (Update.end()) {
             DEBUG_PRINT(DEBUG_MIN, "OTA update finished. Rebooting...");
             if (Update.isFinished()) {
-              Serial1.println("FOTA Success");
+              Serial1.println("Success");
               DEBUG_PRINT(DEBUG_MIN, "/--------------------------------------------------------------/");
               DEBUG_PRINT(DEBUG_MIN, "System reboot: FOTA Update successfully finished");
               DEBUG_PRINT(DEBUG_MIN, "/--------------------------------------------------------------/");
@@ -1040,7 +1099,7 @@ void performFotaUpdate(void)
               ESP.restart();
             } else {
               DEBUG_PRINT(DEBUG_MIN, "Update not finished? Something went wrong!");
-              Serial1.println("FOTA Download Error");
+              Serial1.println("Error");
             }
           } else {
             DEBUG_PRINT(DEBUG_MIN, "Update failed. Error: %d", Update.getError());

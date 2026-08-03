@@ -1,5 +1,5 @@
 // kotlin
-package com.example.powertap
+package com.drivool.iot.powertap
 
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData

@@ -60,7 +60,7 @@
             </LinearLayout>
 
             <!-- LCD View (Below) -->
-            <com.example.powertap.TwoLineLCDView
+            <com.drivool.iot.powertap.TwoLineLCDView
                 android:id="@+id/lcd_view"
                 android:layout_width="match_parent"
                 android:layout_height="120dp" />
@@ -223,7 +223,7 @@
             </LinearLayout>
         </androidx.cardview.widget.CardView>
 
-        <com.example.powertap.SliderButtonView
+        <com.drivool.iot.powertap.SliderButtonView
             android:id="@+id/slider_button"
             android:layout_width="match_parent"
             android:layout_height="70dp"

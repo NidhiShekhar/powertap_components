@@ -1,4 +1,4 @@
-package com.example.powertap
+package com.drivool.iot.powertap
 
 import android.graphics.Color
 import android.os.Bundle
@@ -11,7 +11,7 @@ import android.widget.ListView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
-import com.example.powertap.contract.MeterData
+import com.drivool.iot.powertap.contract.MeterData
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject

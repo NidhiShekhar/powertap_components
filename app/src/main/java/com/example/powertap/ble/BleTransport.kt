@@ -1,4 +1,4 @@
-package com.example.powertap.ble
+package com.drivool.iot.powertap.ble
 
 import android.Manifest
 import android.bluetooth.BluetoothAdapter
@@ -19,10 +19,10 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.ParcelUuid
 import androidx.core.app.ActivityCompat
-import com.example.powertap.contract.ConnectionState
-import com.example.powertap.contract.DeviceTransport
-import com.example.powertap.contract.DiscoveredDevice
-import com.example.powertap.contract.PtContract
+import com.drivool.iot.powertap.contract.ConnectionState
+import com.drivool.iot.powertap.contract.DeviceTransport
+import com.drivool.iot.powertap.contract.DiscoveredDevice
+import com.drivool.iot.powertap.contract.PtContract
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow

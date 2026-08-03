@@ -1,4 +1,4 @@
-package com.example.powertap.contract
+package com.drivool.iot.powertap.contract
 
 /**
  * Connection lifecycle states shared by every transport (BLE now, MQTT later).

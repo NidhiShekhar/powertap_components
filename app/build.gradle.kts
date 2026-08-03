@@ -1,14 +1,15 @@
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.google.services)
 }
 
 android {
-    namespace = "com.example.powertap"
+    namespace = "com.drivool.iot.powertap"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.drivool.powertap"
+        applicationId = "com.drivool.iot.powertap"
         minSdk = 24
         targetSdk = 36
         versionCode = 1
@@ -55,6 +56,10 @@ dependencies {
     implementation(libs.paho.mqtt)
     implementation("androidx.fragment:fragment-ktx:1.8.2")
     implementation("androidx.cardview:cardview:1.0.0")
+
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.database)
+
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

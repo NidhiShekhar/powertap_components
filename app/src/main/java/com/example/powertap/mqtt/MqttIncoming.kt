@@ -1,4 +1,4 @@
-package com.example.powertap.mqtt
+package com.drivool.iot.powertap.mqtt
 
 /** A message received from the MQTT broker. */
 data class MqttIncoming(

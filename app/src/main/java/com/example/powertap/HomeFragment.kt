@@ -1,4 +1,4 @@
-package com.example.powertap
+package com.drivool.iot.powertap
 
 import android.os.Bundle
 import android.view.LayoutInflater
@@ -8,7 +8,15 @@ import android.widget.Button
 import android.widget.SeekBar
 import android.widget.TextView
 import androidx.fragment.app.Fragment
+import com.drivool.iot.powertap.mqtt.MqttPrefs
 import com.google.android.material.tabs.TabLayout
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.collect
+import com.google.firebase.database.DataSnapshot
+import com.google.firebase.database.DatabaseError
+import com.google.firebase.database.FirebaseDatabase
+import com.google.firebase.database.ValueEventListener
 
 import java.util.Locale
 
@@ -16,6 +24,11 @@ class HomeFragment : Fragment() {
 
     private var time = 60
     private var units = 10
+    private var deviceId: String = ""
+    private var currentState: Int = DeviceState.STATE_AVAILABLE
+    private var transactionId: String? = null
+    private var statusListener: ValueEventListener? = null
+    private var deviceRef: com.google.firebase.database.DatabaseReference? = null
 
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?,
@@ -136,8 +149,186 @@ class HomeFragment : Fragment() {
             }
         }
 
-        sliderButton.activate(false)
-        sliderButton.setText("Device is offline")
+        var lastFirebaseHeartbeat = 0L
+        var serverTimeOffset = 0L
+
+        fun updateOnlineStatus() {
+            val currentTime = System.currentTimeMillis() + serverTimeOffset
+            val diffSeconds = if (lastFirebaseHeartbeat > 0) (currentTime - lastFirebaseHeartbeat) / 1000 else 999
+            
+            // Online threshold is now strictly 45 seconds as requested
+            val isOnline = lastFirebaseHeartbeat > 0 && diffSeconds < 45
+            
+            activity?.runOnUiThread {
+                if (isOnline) {
+                    txtSubtitle.text = "ID: $deviceId | Online"
+                    
+                    when (currentState) {
+                        DeviceState.STATE_AVAILABLE, DeviceState.STATE_STOPPED -> {
+                            sliderButton.activate(true)
+                            sliderButton.setState(true) // Left side
+                            sliderButton.setText(if (tabLayout.selectedTabPosition == 0) "Slide to Start Charging" else "Slide to Confirm")
+                            sliderButton.hideProgress()
+                            sliderSection.visibility = if (tabLayout.selectedTabPosition == 0) View.GONE else View.VISIBLE
+                        }
+                        DeviceState.STATE_STARTING -> {
+                            sliderButton.activate(true)
+                            sliderButton.showProgress("Starting...")
+                        }
+                        DeviceState.STATE_CHARGING, DeviceState.STATE_STARTED -> {
+                            sliderButton.activate(true)
+                            sliderButton.setState(false) // Right side
+                            sliderButton.setText("Slide to Stop")
+                            sliderButton.hideProgress()
+                            sliderSection.visibility = View.GONE
+                        }
+                        DeviceState.STATE_STOPPING -> {
+                            sliderButton.activate(true)
+                            sliderButton.showProgress("Stopping...")
+                        }
+                        else -> {
+                            sliderButton.activate(true)
+                            sliderButton.setText("Status: $currentState")
+                        }
+                    }
+                } else {
+                    if (sliderButton.isActive) {
+                        sliderButton.activate(false)
+                        sliderButton.setText("Device is Offline")
+                    }
+                    txtSubtitle.text = "ID: $deviceId | Diff: ${diffSeconds}s | Offline"
+                }
+            }
+        }
+
+        fun setupFirebaseListener() {
+            // Remove old listener if exists
+            statusListener?.let { deviceRef?.removeEventListener(it) }
+
+            deviceId = MqttPrefs.loadDeviceId(requireContext()).lowercase().trim()
+            if (deviceId.isNotEmpty()) {
+                val database = FirebaseDatabase.getInstance()
+                // Update to the correct path as per your Firebase rules: PowerTapMonitor/$deviceId
+                val ref = database.getReference("PowerTapMonitor/$deviceId")
+                deviceRef = ref
+                txtSubtitle.text = "Device ID: $deviceId"
+                val offsetRef = database.getReference(".info/serverTimeOffset")
+
+                var localServerOffset = 0L
+
+                offsetRef.addValueEventListener(object : ValueEventListener {
+                    override fun onDataChange(snapshot: DataSnapshot) {
+                        localServerOffset = snapshot.getValue(Long::class.java) ?: 0L
+                        serverTimeOffset = localServerOffset
+                        LogRepository.append("Firebase: Server time offset: $serverTimeOffset")
+                    }
+                    override fun onCancelled(error: DatabaseError) {
+                        LogRepository.append("Firebase: Server time offset failed: ${error.message}")
+                    }
+                })
+
+                statusListener = ref.addValueEventListener(object : ValueEventListener {
+                    override fun onDataChange(snapshot: DataSnapshot) {
+                        LogRepository.append("Firebase: Data changed for $deviceId: ${snapshot.exists()}")
+                        if (!snapshot.exists()) {
+                            sliderButton.activate(false)
+                            sliderButton.setText("Device Not Found")
+                            txtSubtitle.text = "ID: $deviceId | Status: Not Found"
+                            return
+                        }
+
+                        // Get the 'time' field as shown in the Firebase console
+                        val heartbeatObj = snapshot.child("time").value
+                        LogRepository.append("Firebase: Heartbeat value: $heartbeatObj")
+
+                        currentState = (snapshot.child("state").value as? Long)?.toInt() ?: DeviceState.STATE_AVAILABLE
+                        transactionId = snapshot.child("transactionId").value as? String
+
+                        var hb = 0L
+                        if (heartbeatObj is Long) {
+                            hb = heartbeatObj
+                        } else if (heartbeatObj is String) {
+                            hb = heartbeatObj.toLongOrNull() ?: 0L
+                        } else if (heartbeatObj is Double) {
+                            hb = heartbeatObj.toLong()
+                        }
+
+                        // Handle both seconds and milliseconds (epoch)
+                        if (hb > 0 && hb < 2_000_000_000L) {
+                            hb *= 1000 // Convert seconds to ms
+                        }
+                        
+                        lastFirebaseHeartbeat = hb
+                        updateOnlineStatus()
+                    }
+
+                    override fun onCancelled(error: DatabaseError) {
+                        LogRepository.append("Firebase: Listen failed for $deviceId: ${error.message}")
+                        updateOnlineStatus()
+                    }
+                })
+            } else {
+                sliderButton.activate(false)
+                sliderButton.setText("No Device Connected")
+            }
+        }
+
+        sliderButton.onSlideRight = {
+            val mode = when (tabLayout.selectedTabPosition) {
+                1 -> "time"
+                2 -> "units"
+                else -> "full"
+            }
+            val value = when (mode) {
+                "time" -> time
+                "units" -> units
+                else -> null
+            }
+            
+            sliderButton.showProgress("Connecting...")
+            FirebaseApiManager.startCharging(deviceId, mode, value,
+                onResult = { LogRepository.append("Firebase: Start Charging Ack: $it") },
+                onError = { 
+                    LogRepository.append("Firebase: Start Charging Error: $it")
+                    sliderButton.hideProgress()
+                }
+            )
+        }
+        
+        sliderButton.onSlideLeft = {
+            transactionId?.let { tid ->
+                sliderButton.showProgress("Stopping...")
+                FirebaseApiManager.stopCharging(deviceId, tid,
+                    onResult = { LogRepository.append("Firebase: Stop Charging Ack: $it") },
+                    onError = { 
+                        LogRepository.append("Firebase: Stop Charging Error: $it")
+                        sliderButton.hideProgress()
+                    }
+                )
+            } ?: run {
+                LogRepository.append("Firebase: Stop Charging Error - No Transaction ID")
+            }
+        }
+
+        // Setup listener initially
+        setupFirebaseListener()
+
+        // Periodic aliveness check (every 5 seconds) to ensure button turns grey when idle
+        viewLifecycleOwner.lifecycleScope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(5000)
+                updateOnlineStatus()
+            }
+        }
+
+        // Also watch for GatewayManager's currentDeviceId to re-setup the listener automatically
+        viewLifecycleOwner.lifecycleScope.launch {
+            GatewayManager.currentDeviceId.collect { id ->
+                if (id.isNotEmpty() && id != deviceId) {
+                    setupFirebaseListener()
+                }
+            }
+        }
 
         return view
     }

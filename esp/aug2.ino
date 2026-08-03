@@ -15,7 +15,7 @@
 
 WiFiClient        espClient         = {0};
 PubSubClient      mqttClient(espClient);
-
+SemaphoreHandle_t xRadioBufMutex    = NULL;
 
 /* Define --------------------------------------------------------------------*/
 #define SERVICE_UUID            "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
@@ -36,7 +36,6 @@ const char *mqtt_password     = "Mqtt##fw01";
 const int   mqtt_port           = 1883;
 static char sub_ack_topic[80] = {0};
 static char sub_cmd_Topic[80] = {0};
-
 
 String mstrMQTTClientId = "esp32_mqtt_client_";
       
@@ -76,13 +75,45 @@ class OnBTStateChange : public BLEServerCallbacks
 class OnBTDataReceive : public BLECharacteristicCallbacks
 {
   void onWrite(BLECharacteristic *pCharacteristic) {
-    String value = pCharacteristic->getValue();
-    if (value.length() > 0) {
-      for (int i = 0; i < value.length(); i++){
-        gRxBuf[i] = value[i]; 
+    String strBTBuff = pCharacteristic->getValue();
+    size_t iBTBuffLen = strBTBuff.length();
+    //BT_PRINT("Rx V: %s :", (const char *)strBTBuff);
+    //BT_PRINT("%d\n",iBTBuffLen);
+    
+    if (iBTBuffLen > 0  && xRadioBufMutex != NULL) {
+      if (xSemaphoreTake(xRadioBufMutex, (TickType_t)10) == pdTRUE) {
+        if (gFlags.RadioRx) {
+          //BT_PRINT("W:9");
+          xSemaphoreGive(xRadioBufMutex);
+          return;
+        }
+
+        if (iBTBuffLen >= MQTT_BUFFER_SIZE) iBTBuffLen = MQTT_BUFFER_SIZE - 1;
+
+        memcpy(gRxBuf, strBTBuff.c_str(), iBTBuffLen);
+        gRxBuf[iBTBuffLen] = '\0'; // Crucial: Null-terminate to prevent crashes in BT_PRINT and JSON parsing
+
+        BT_PRINT("R:%s", (const char *)gRxBuf);
+        gFlags.RadioRx = true;
+
+        xSemaphoreGive(xRadioBufMutex);
       }
-      BT_PRINT("Rx: %s\n", (const char *)gRxBuf);
-      gFlags.RadioRx = true;
+      //  else {
+      //   BT_PRINT("W:10");
+      // }
+
+
+
+      // for (int i = 0; i < iBTBuffLen ; i++){
+      //   gRxBuf[i] = strBTBuff[i]; 
+      // }
+      // gRxBuf[iBTBuffLen] = 0;
+      
+      // BT_PRINT("Rx B: %s\n", (const char *)gRxBuf);
+      // gFlags.RadioRx = true;
+
+
+
     }
   }
 };
@@ -95,11 +126,12 @@ void startBLE() {
   
   BLEService *pService = pServer->createService(SERVICE_UUID);
     
+   //  | BLECharacteristic::PROPERTY_NOTIFY
+
   pCharacteristic = pService->createCharacteristic(
                                               CHARACTERISTIC_UUID,
                                               BLECharacteristic::PROPERTY_READ |
-                                              BLECharacteristic::PROPERTY_WRITE |
-                                              BLECharacteristic::PROPERTY_NOTIFY);
+                                              BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_NOTIFY);
 
   pCharacteristic->setCallbacks(new OnBTDataReceive());
   //pCharacteristic->addDescriptor(new BLE2902());
@@ -130,10 +162,23 @@ void shutdownBLE() {
 
 void mqtt_callback(char *subscribe_topic, byte *payload, unsigned int length)
 {
-  for (int i = 0; i < length; i++) {
-    gRxBuf[i] = payload[i];
+  // for (int i = 0; i < length; i++) {
+  //   gRxBuf[i] = payload[i];
+  // }
+  // gFlags.RadioRx = true;
+
+
+  if (xRadioBufMutex != NULL && xSemaphoreTake(xRadioBufMutex, (TickType_t)10) == pdTRUE) {
+    if (gFlags.RadioRx) {
+      xSemaphoreGive(xRadioBufMutex);
+      return;
+    }
+    size_t len = (length < MQTT_BUFFER_SIZE) ? length : (MQTT_BUFFER_SIZE - 1);
+    memcpy(gRxBuf, payload, len);
+    gRxBuf[len] = '\0'; // Ensure null termination
+    gFlags.RadioRx = true;
+    xSemaphoreGive(xRadioBufMutex);
   }
-  gFlags.RadioRx = true;
 }
 
 void SendData(uint8_t *payload)
@@ -142,7 +187,7 @@ void SendData(uint8_t *payload)
     D_PRINT("SendData via MQTT: %s\n", (const char *)payload);
     mqttClient.publish(public_topic, (const char *)payload);
   }else if (gFlags.BTConnected) {
-    BT_PRINT("Tx: %s\n", (const char *)payload);
+    BT_PRINT("T:%s\n", (const char *)payload);
 #ifdef USE_BLE    
     pCharacteristic->setValue((uint8_t*)payload, strlen((char *)payload));
     pCharacteristic->notify();
@@ -152,11 +197,13 @@ void SendData(uint8_t *payload)
 
 bool CheckReceiverStatus(void)
 {
-  if (gFlags.RadioRx) {
-    gFlags.RadioRx = false;
-    return true;
-  }
-  return false;
+  // if (gFlags.RadioRx) {
+  //   gFlags.RadioRx = false;
+  //   return true;
+  // }
+  // return false;
+
+  return gFlags.RadioRx;
 }
 
 uint8_t iMQTTAttemptCount = 0;
@@ -174,7 +221,7 @@ void mqttReconnect() {
       iMQTTAttemptCount = 0;
       mqttClient.subscribe(sub_ack_topic);
       mqttClient.subscribe(sub_cmd_Topic);
-      Serial1.println("Linking Cloud...");
+      //Serial1.println("Linking Cloud...");
       //D_PRINT("Subscribed.");
       delay(500);
 
@@ -194,7 +241,7 @@ void mqttReconnect() {
 
 void IRAM_ATTR PowerFailureInterrupt()
 {
-  DEBUG_PRINT(DEBUG_MIN, "Power Failure Detected\n");
+  // DEBUG_PRINT(DEBUG_MIN, "Power Failure Detected\n");
   gFlags.PowerDown = 1;
   gDeviceState.iEnergy += gMetroData.energyActive; // gMeetering.Energy;
   gDeviceState.iStopEnergy = gDeviceState.iEnergy;
@@ -259,7 +306,7 @@ void setup()
   pinMode(BLE_LED_Pin, OUTPUT);
   pinMode(INT_PIN, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(INT_PIN), PowerFailureInterrupt, RISING);
-
+  xRadioBufMutex = xSemaphoreCreateMutex();
 	DEBUG_PRINT(DEBUG_MIN, "--------------------------------------------------");
 	DEBUG_PRINT(DEBUG_MIN, "                 Drivool PowerTap                 ");
 	DEBUG_PRINT(DEBUG_MIN, "--------------------------------------------------");
@@ -292,7 +339,7 @@ void setup()
   // 2. CONNECTED EVENT
   WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info){
         D_PRINT("WiFi Restored! System Online.");
-        Serial1.println("WiFi connected!");
+        //Serial1.println("WiFi connected!");
         gFlags.WiFiConnected = true;
         digitalWrite(WIFI_LED_Pin, HIGH);
 #ifdef USE_BLE        
@@ -310,6 +357,10 @@ void setup()
   mstrDeviceTag += (char *)gDeviceId;
   /* BLE intialization */
  
+    #ifdef USE_BLE
+        startBLE();
+    #endif 
+
     String ssid = wifiManager.getWiFiSSID();
     String pass = wifiManager.getWiFiPass();
         
@@ -318,10 +369,10 @@ void setup()
     
   
     if(ssid != ""){ 
-      wifiManager.setConfigPortalTimeout(60);
+      wifiManager.setConfigPortalTimeout(30);
     }
 
-    Serial1.println("Searching WiFi..");
+    //Serial1.println("Searching WiFi..");
     /* Enabling WiFi Access Point */
     if (!(wifiManager.autoConnect(mstrDeviceTag.c_str(), "drivool123"))) {
       D_PRINT("WiFi Failed to connect");
@@ -341,17 +392,14 @@ void setup()
 
     //DEBUG_PRINT(DEBUG_MIN, "Client connected!");
     //Serial1.println("Client connected!");
-    delay(500);
+    //delay(500);
     sprintf(sub_ack_topic, "pwt_fm01/%s/ack", gDeviceId);    
     sprintf(sub_cmd_Topic, "pwt_fm01/%s/command", gDeviceId);
 
     //mqttClient.subscribe((const char*)&sub_ack_topic[0]);
     //mqttClient.subscribe((const char*)&sub_cmd_Topic[0]);
     //DEBUG_PRINT(DEBUG_MIN, "mqtt subscribed topic \n1: %s\n2: %s\n\n", &sub_ack_topic[0], &sub_cmd_Topic[0]);
-
-#ifdef USE_BLE
-    startBLE();
-#endif    
+   
 
 
   //DEBUG_PRINT(DEBUG_MIN, " RadioCmd_Enqueue(BootNotification)");
@@ -375,23 +423,10 @@ const unsigned long WIFI_RETRY_INTERVAL = 30000; // 30 seconds
 void loop()
 {
 
-  // Check memory every 5 seconds
-  // if (millis() - lastHeapCheck > 5000) {
-  //   uint32_t freeHeap = ESP.getFreeHeap();
-  //   uint32_t minFreeHeap = ESP.getMinFreeHeap(); // The lowest it has ever dropped
-
-  //   DEBUG_PRINT(DEBUG_MIN,"\n--- Memory Report ---\n");
-  //   D_PRINT("Free Heap: %u bytes", freeHeap);
-  //   D_PRINT("Lowest Free: %u bytes\n", minFreeHeap);
-  //   DEBUG_PRINT(DEBUG_MIN,"Largest Free Block: %u\n", ESP.getMaxAllocHeap());
-    
-  //   // Optional: Alert if memory is critically low
-  //   if (freeHeap < 10000) {
-  //     D_PRINT("WARNING: Low memory detected!");
-  //   }
-    
-  //   lastHeapCheck = millis();
-  // }
+  if (millis() - lastHeapCheck > 5000) {
+    Serial.printf("H:%u\n", ESP.getFreeHeap());
+    lastHeapCheck = millis();
+  }
 
   wifiManager.process();
   if (gFlags.WiFiConnected) {

@@ -1,7 +1,7 @@
-package com.example.powertap.mqtt
+package com.drivool.iot.powertap.mqtt
 
 import android.content.Context
-import com.example.powertap.BuildConfig
+import com.drivool.iot.powertap.BuildConfig
 
 /** Persists MQTT settings entered in the UI (overrides BuildConfig when set). */
 object MqttPrefs {

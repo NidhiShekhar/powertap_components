@@ -1,4 +1,4 @@
-package com.example.powertap.contract
+package com.drivool.iot.powertap.contract
 
 import java.util.UUID
 
