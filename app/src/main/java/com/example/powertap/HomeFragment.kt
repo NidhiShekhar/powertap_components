@@ -18,6 +18,8 @@ import com.google.firebase.database.DatabaseError
 import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.database.ValueEventListener
 
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 class HomeFragment : Fragment() {
@@ -312,6 +314,28 @@ class HomeFragment : Fragment() {
 
         // Setup listener initially
         setupFirebaseListener()
+
+        // Watch GatewayManager for real-time MeterData
+        viewLifecycleOwner.lifecycleScope.launch {
+            GatewayManager.latestMeterData.collect { data ->
+                data?.let {
+                    val voltageStr = String.format(Locale.getDefault(), "%.1fV", it.voltage)
+                    val energyStr = String.format(Locale.getDefault(), "%.3fKWh", it.energy)
+                    val dateFormat = SimpleDateFormat("d MMM hh:mm a", Locale.getDefault())
+                    val dateStr = dateFormat.format(Date()).uppercase()
+
+                    lcdView.setText(
+                        listOf(
+                            LCDSegment(voltageStr, 28f, Align.LEFT, 1f, true),
+                            LCDSegment(energyStr, 28f, Align.RIGHT, 1f, true)
+                        ),
+                        listOf(
+                            LCDSegment(dateStr, 24f, Align.CENTER, 1f, true)
+                        )
+                    )
+                }
+            }
+        }
 
         // Periodic aliveness check (every 5 seconds) to ensure button turns grey when idle
         viewLifecycleOwner.lifecycleScope.launch {
