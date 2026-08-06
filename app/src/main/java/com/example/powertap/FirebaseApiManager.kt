@@ -22,12 +22,12 @@ object DeviceState {
 object FirebaseApiManager {
     private val database = FirebaseDatabase.getInstance()
     
-    // Default credentials as in JS
-    private var account = "mail4satya"
+    private val account: String
+        get() = AuthManager.userEmail?.substringBefore("@")?.replace(Regex("[.#$\\[\\]]"), "_") ?: "guest"
+
     private var key = ""
 
-    fun setCredentials(account: String, key: String) {
-        this.account = account
+    fun setCredentials(key: String) {
         this.key = key
     }
 
@@ -70,31 +70,10 @@ object FirebaseApiManager {
             }
         })
 
-        // Write command with concurrency check
+        // Write command directly to avoid double round-trip
         val commandRef = database.getReference("Commands/PTD/$deviceId")
-        commandRef.addListenerForSingleValueEvent(object : ValueEventListener {
-            override fun onDataChange(snapshot: DataSnapshot) {
-                val existingCommand = snapshot.value as? Map<*, *>
-                if (existingCommand == null) {
-                    commandRef.setValue(commandToExecute)
-                } else {
-                    val existingId = existingCommand["id"] as? String
-                    val existingTime = existingCommand["time"] as? Long ?: 0L
-                    
-                    if (existingId == account) {
-                        commandRef.setValue(commandToExecute)
-                    } else if (timeNow > existingTime + 5000) {
-                        commandRef.setValue(commandToExecute)
-                    } else {
-                        onError("Device is being used by another user: $existingId")
-                    }
-                }
-            }
-
-            override fun onCancelled(error: DatabaseError) {
-                onError("Failed to check existing command: ${error.message}")
-            }
-        })
+        commandRef.setValue(commandToExecute)
+            .addOnFailureListener { e -> onError("Firebase write failed: ${e.message}") }
     }
 
     fun startCharging(
@@ -105,6 +84,7 @@ object FirebaseApiManager {
         onError: (String) -> Unit
     ) {
         val params = mutableMapOf<String, Any>("mode" to mode)
+        params["tid"] = "T" + System.currentTimeMillis().toString() // Add transaction ID
         if (value != null) {
             if (mode == "time") params["time"] = value
             else if (mode == "units") params["units"] = value

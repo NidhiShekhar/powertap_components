@@ -23,6 +23,10 @@ SemaphoreHandle_t xRadioBufMutex    = NULL;
 #define MAX_CON_RETRY_COUNT     10
 #define USE_BLE
 
+// BLE-only test: ESP <-> BLE <-> Android <-> Firebase (phone network).
+// Comment out / set to 0 to restore normal WiFi+MQTT on the ESP.
+#define BLE_ONLY_TEST  1
+
 /* Variables -----------------------------------------------------------------*/
 const int       buttonPin           = 4;
 const int       BLE_LED_Pin         = 45;
@@ -272,22 +276,30 @@ void IRAM_ATTR serialEvent1()
 WiFiManager wifiManager;
 
 void enableWiFi_AP_Mode(){
-      D_PRINT("WiFi connection lost!");
-      //Serial1.println("WiFi connected!");
+#if BLE_ONLY_TEST
+      // BLE-only test: never bring WiFi/AP back up
+      gFlags.WiFiConnected = false;
+      gFlags.ShouldStartPortal = false;
+      return;
+#else
+      if (gFlags.ShouldStartPortal && !gFlags.WiFiConnected) return; // Already in this state
+
+      D_PRINT("WiFi connection lost! Enabling AP Mode.");
       gFlags.ShouldStartPortal = true;
       gFlags.WiFiConnected = false;
-      WiFi.disconnect(); // Ensure state is cleared
-      //WiFi.mode(WIFI_OFF);
-      WiFi.mode(WIFI_AP_STA);
+
+      // Only switch modes if necessary
+      if (WiFi.getMode() != WIFI_AP_STA) {
+          WiFi.mode(WIFI_AP_STA);
+      }
+
       WiFi.softAP(mstrDeviceTag.c_str());
       digitalWrite(WIFI_LED_Pin, LOW);
-      
-      //Line 1: Setup via WiFi:  (16 chars)
-      //Line 2: PowerTap Hotspot (16 chars)
 
 #ifdef USE_BLE      
       if(pBTAdvertising != NULL)pBTAdvertising->start();
-#endif  
+#endif
+#endif
 }
 
 void setup()
@@ -324,30 +336,6 @@ void setup()
     delay(500);
   }
 
-  //WiFi.mode(WIFI_STA);
-  WiFi.mode(WIFI_AP_STA);
-  WiFi.setAutoReconnect(true);
-
-  // Register an event listener for when the station disconnects
-  WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info){
-    if(gFlags.WiFiConnected){
-      enableWiFi_AP_Mode();
-    }
-  }, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
-
-
-  // 2. CONNECTED EVENT
-  WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info){
-        D_PRINT("WiFi Restored! System Online.");
-        //Serial1.println("WiFi connected!");
-        gFlags.WiFiConnected = true;
-        digitalWrite(WIFI_LED_Pin, HIGH);
-#ifdef USE_BLE        
-        if(pBTAdvertising != NULL)pBTAdvertising->stop();
-#endif        
-        
-  }, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_GOT_IP);
-
   readDeviceMACAddress();
 
   mstrMQTTClientId += (char *)gDeviceId;
@@ -355,52 +343,59 @@ void setup()
   loadState();
 
   mstrDeviceTag += (char *)gDeviceId;
-  /* BLE intialization */
- 
-    #ifdef USE_BLE
-        startBLE();
-    #endif 
 
-    String ssid = wifiManager.getWiFiSSID();
-    String pass = wifiManager.getWiFiPass();
-        
-    //D_PRINT("Saved SSID: " + ssid);
-    //D_PRINT("Saved Pass: " + pass);
-    
-  
-    if(ssid != ""){ 
-      wifiManager.setConfigPortalTimeout(30);
-    }
+#if BLE_ONLY_TEST
+  // Force radio off (keeps saved credentials for when BLE_ONLY_TEST is turned off)
+  WiFi.setAutoReconnect(false);
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  gFlags.WiFiConnected = false;
+  gFlags.ShouldStartPortal = false;
+  digitalWrite(WIFI_LED_Pin, LOW);
+  D_PRINT("BLE_ONLY_TEST: WiFi OFF — use Android BLE bridge to Firebase");
 
-    //Serial1.println("Searching WiFi..");
-    /* Enabling WiFi Access Point */
-    if (!(wifiManager.autoConnect(mstrDeviceTag.c_str(), "drivool123"))) {
-      D_PRINT("WiFi Failed to connect");
-      //Serial1.println("WiFi Failed to connect");
-    }
-    else {
-      /* if you get here you have connected to the WiFi */
-      D_PRINT("WiFi connected!");
-      //Serial1.println("WiFi connected!");
-    }
-    delay(250);
+#ifdef USE_BLE
+  startBLE();
+#endif
 
-    /*connecting to a mqtt broker */
-    mqttClient.setServer(mqtt_broker, mqtt_port);
-    mqttClient.setCallback(mqtt_callback);
-    
+#else
+  // Ensure we are in AP+STA mode so the config portal can be hosted
+  // while the station is also active/searching.
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.setAutoReconnect(true);
 
-    //DEBUG_PRINT(DEBUG_MIN, "Client connected!");
-    //Serial1.println("Client connected!");
-    //delay(500);
-    sprintf(sub_ack_topic, "pwt_fm01/%s/ack", gDeviceId);    
-    sprintf(sub_cmd_Topic, "pwt_fm01/%s/command", gDeviceId);
+#ifdef USE_BLE
+  // WiFi first, then BLE — required for reliable STA join
+  // (BLE is started after autoConnect below)
+#endif
 
-    //mqttClient.subscribe((const char*)&sub_ack_topic[0]);
-    //mqttClient.subscribe((const char*)&sub_cmd_Topic[0]);
-    //DEBUG_PRINT(DEBUG_MIN, "mqtt subscribed topic \n1: %s\n2: %s\n\n", &sub_ack_topic[0], &sub_cmd_Topic[0]);
-   
+  // WiFiManager Setup
+  wifiManager.setConfigPortalTimeout(180); // 3 minutes timeout
+  wifiManager.setConnectTimeout(30);       // 30 seconds to try connecting to station
+  wifiManager.setConfigPortalBlocking(false);
 
+  /* Enabling WiFi */
+  if (!(wifiManager.autoConnect(mstrDeviceTag.c_str(), "drivool123"))) {
+    D_PRINT("WiFi: AutoConnect failed, starting non-blocking portal");
+  }
+  else {
+    D_PRINT("WiFi: Connected!");
+    gFlags.WiFiConnected = true;
+    digitalWrite(WIFI_LED_Pin, HIGH);
+  }
+  delay(250);
+
+#ifdef USE_BLE
+  startBLE();
+#endif
+
+  /*connecting to a mqtt broker */
+  mqttClient.setServer(mqtt_broker, mqtt_port);
+  mqttClient.setCallback(mqtt_callback);
+
+  sprintf(sub_ack_topic, "pwt_fm01/%s/ack", gDeviceId);
+  sprintf(sub_cmd_Topic, "pwt_fm01/%s/command", gDeviceId);
+#endif
 
   //DEBUG_PRINT(DEBUG_MIN, " RadioCmd_Enqueue(BootNotification)");
   RadioCmd_Enqueue(BootNotification);
@@ -422,58 +417,56 @@ unsigned long lastWiFiAttempt = 0;
 const unsigned long WIFI_RETRY_INTERVAL = 30000; // 30 seconds
 void loop()
 {
+#if !BLE_ONLY_TEST
+  wifiManager.process();
 
-  if (millis() - lastHeapCheck > 5000) {
-    Serial.printf("H:%u\n", ESP.getFreeHeap());
-    lastHeapCheck = millis();
+  // Sync our internal flag with actual WiFi status
+  if (WiFi.status() == WL_CONNECTED) {
+    if (!gFlags.WiFiConnected) {
+      gFlags.WiFiConnected = true;
+      digitalWrite(WIFI_LED_Pin, HIGH);
+      D_PRINT("WiFi: Connected (IP: %s)", WiFi.localIP().toString().c_str());
+      #ifdef USE_BLE
+        if(pBTAdvertising != NULL) pBTAdvertising->stop();
+      #endif
+    }
+  } else {
+    if (gFlags.WiFiConnected) {
+      gFlags.WiFiConnected = false;
+      digitalWrite(WIFI_LED_Pin, LOW);
+      D_PRINT("WiFi: Disconnected");
+      #ifdef USE_BLE
+        if(pBTAdvertising != NULL) pBTAdvertising->start();
+      #endif
+    }
   }
 
-  wifiManager.process();
   if (gFlags.WiFiConnected) {
     if (!mqttClient.connected()) {
       mqttReconnect();
-    }else{
+    } else {
       Wireless_Communication_Handler();
     }
-    
     mqttClient.loop();
-  } 
-  else {
-    
-     if(gFlags.BTConnected){
-          Wireless_Communication_Handler();
-     }else{ 
-      //D_PRINT("WiFi Reconencting...");
-      unsigned long currentMillis = millis();
-
-      // if (gFlags.ShouldStartPortal) {
-      //         D_PRINT("Starting Config Portal safely...");
-      //         wifiManager.startConfigPortal(mstrDeviceTag.c_str(), "drivool123");
-              
-      //         gFlags.ShouldStartPortal = false; 
-      //         // Note: WiFiManager will set WiFi back to connected if the user saves successfully
-      //         return; // Exit loop early to let the system refresh
-      // }
-      
-      if (currentMillis - lastWiFiAttempt >= WIFI_RETRY_INTERVAL) {
-          lastWiFiAttempt = currentMillis;
-          D_PRINT("Retrying WiFi Connection...");
-          
-          // Calling begin() without arguments uses the last known SSID/Pass
-          WiFi.begin(); 
-      }
-      
+  } else
+#endif
+  {
+    // BLE path (only path when BLE_ONLY_TEST=1)
+    if (gFlags.BTConnected) {
+      Wireless_Communication_Handler();
     }
-
   }
 
   /* Fota Update */
-  if(gFlags.FOTA) {
+  if (gFlags.FOTA) {
+#if !BLE_ONLY_TEST
     performFotaUpdate();
+#else
+    gFlags.FOTA = false; // needs WiFi; skip in BLE-only test
+#endif
   }
 
-  if(gFlags.PowerDown == 1) {
-    //DEBUG_PRINT(DEBUG_MIN, "Power Failure Detected\n");
+  if (gFlags.PowerDown == 1) {
     gStatus = Unavailable;
     gFlags.Relay = false;
     RadioCmd_Enqueue(StatusNotification);
@@ -481,38 +474,37 @@ void loop()
     gFlags.PowerDown = 0;
   }
 
-  static uint32_t lastmilli=0;
+  static uint32_t lastmilli = 0;
   uint32_t now = millis();
-  
-  if ((now - lastmilli) >= 10000) { // Every 5 sec
-      //D_PRINT("showMeterDetailsOnLCD");
-      if(!gFlags.Relay && gFlags.ShouldStartPortal){
-        static bool blnDisplayDone = false;
-        if(!blnDisplayDone){
-          showMeesageOnLCD(1,"Setup via WiFi:" );
-          showMeesageOnLCD(2,"PowerTap Hotspot" );
-          blnDisplayDone = true;
-        }else{
-          D_PRINT("Starting Config Portal...");
-          if(wifiManager.startConfigPortal(mstrDeviceTag.c_str(), "drivool123")){
-            gFlags.ShouldStartPortal = false; // On Sucessfull
-          }else{
-            gFlags.ShouldStartPortal = true;  // On Timeout
-          }
-          blnDisplayDone = false;
-          return;
-        }
-      }else{
-          showMeterDetailsOnLCD(); // First line
-          if(gFlags.Relay){ 
-            showChargingUpdateOnLCD(); // Second line
-          }else{
-            showTimeOnLCD(); // Second line
-          }
+
+  if ((now - lastmilli) >= 5000) {
+#if BLE_ONLY_TEST
+    // Always show meter/time on device LCD during BLE test (no WiFi portal nag)
+    showMeterDetailsOnLCD();
+    if (gFlags.Relay) {
+      showChargingUpdateOnLCD();
+    } else {
+      showTimeOnLCD();
+    }
+#else
+    if (!gFlags.Relay && !gFlags.WiFiConnected) {
+      static bool blnDisplayDone = false;
+      if (!blnDisplayDone) {
+        showMeesageOnLCD(1, "Setup via WiFi:");
+        showMeesageOnLCD(2, "PowerTap Hotspot");
+        blnDisplayDone = true;
       }
+    } else {
+      showMeterDetailsOnLCD();
+      if (gFlags.Relay) {
+        showChargingUpdateOnLCD();
+      } else {
+        showTimeOnLCD();
+      }
+    }
+#endif
     lastmilli = now;
   }
 
   UART_Communication_Handling();
-
 }

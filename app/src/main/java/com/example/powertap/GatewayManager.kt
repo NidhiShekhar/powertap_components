@@ -8,6 +8,7 @@ import com.drivool.iot.powertap.contract.ConnectionState
 import com.drivool.iot.powertap.mqtt.MqttPrefs
 import com.drivool.iot.powertap.mqtt.MqttTransport
 import com.drivool.iot.powertap.contract.MeterData
+import com.drivool.iot.powertap.contract.ChargingSession
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -16,6 +17,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * GatewayManager is a singleton that holds the BLE and MQTT transports
@@ -40,6 +42,9 @@ object GatewayManager {
     private val _meterHistory = MutableStateFlow<List<MeterData>>(emptyList())
     val meterHistory: StateFlow<List<MeterData>> = _meterHistory.asStateFlow()
 
+    private val _bridgeDetectedState = MutableStateFlow<Int?>(null)
+    val bridgeDetectedState: StateFlow<Int?> = _bridgeDetectedState.asStateFlow()
+
     private var context: Context? = null
 
     private val _currentDeviceId = MutableStateFlow<String>("")
@@ -52,6 +57,7 @@ object GatewayManager {
 
     fun init(context: Context) {
         this.context = context.applicationContext
+        TransactionRepository.init(context.applicationContext)
         if (_bleTransport == null) {
             _bleTransport = BleTransport(context.applicationContext, log = LogRepository::append)
             setupBridge()
@@ -109,6 +115,8 @@ object GatewayManager {
                     val address = bleTransport.connectedAddress.value
                     if (address != null) {
                         LogRepository.append("Bridge: BLE Connected ($address)")
+                        lastHeartbeatTime = System.currentTimeMillis()
+                        _isDeviceOnline.value = true
                         
                         // Save for auto-connect
                         val deviceName = bleTransport.discoveredDevices.value
@@ -180,6 +188,8 @@ object GatewayManager {
                         _meterHistory.value = current
                     }
 
+                    handleOcppPacket(payload)
+
                     // Forward to MQTT - handle ACKs (type 3) and packets (type 2)
                     if (trimmed.startsWith("[3,")) {
                         _mqttTransport.publishAck(payload) { ok ->
@@ -198,6 +208,7 @@ object GatewayManager {
             _mqttTransport.incoming.collect { incoming ->
                 if (_isBridgeEnabled.value) {
                     LogRepository.append("Bridge: MQTT -> BLE: ${incoming.payload}")
+                    handleOcppPacket(incoming.payload)
                     // Forward directly to BLE without throttle as firmware handles duplicates now
                     if (!bleTransport.send(incoming.payload)) {
                         LogRepository.append("Error: Failed to send MQTT message to BLE")
@@ -218,6 +229,15 @@ object GatewayManager {
             val meterValue = when (messageType) {
                 "MeterValues" -> dataObj.optJSONObject("meterValue")
                 "Heartbeat" -> dataObj
+                "StartTransaction" -> {
+                    // Initialize with start energy
+                    val e = dataObj.optDouble("meterStart", 0.0)
+                    JSONObject().put("e", e)
+                }
+                "StopTransaction" -> {
+                    val e = dataObj.optDouble("meterStop", 0.0)
+                    JSONObject().put("e", e)
+                }
                 else -> null
             } ?: return null
 
@@ -230,6 +250,58 @@ object GatewayManager {
             )
         } catch (e: Exception) {
             null
+        }
+    }
+
+    private var pendingMode: String? = null
+    private var pendingTid: String? = null
+
+    private fun handleOcppPacket(payload: String) {
+        try {
+            val arr = JSONArray(payload)
+            if (arr.length() < 4) return
+            val msgType = arr.getString(2)
+            val data = arr.getJSONObject(3)
+            val deviceId = if (arr.length() >= 5) arr.getString(4) else _currentDeviceId.value
+
+            when (msgType) {
+                "RemoteStart" -> {
+                    pendingMode = data.optString("mode", "full")
+                    pendingTid = data.optString("tid")
+                }
+                "StartTransaction" -> {
+                    val tid = data.getString("transactionId")
+                    val mStart = data.getDouble("meterStart").toFloat()
+                    val mode = if (tid == pendingTid) pendingMode else "full"
+                    TransactionRepository.startSession(
+                        ChargingSession(
+                            transactionId = tid,
+                            deviceId = deviceId,
+                            startTime = System.currentTimeMillis(),
+                            meterStart = mStart,
+                            mode = mode,
+                            status = "Active"
+                        )
+                    )
+                    _bridgeDetectedState.value = 3 // STATE_CHARGING
+                }
+                "StopTransaction" -> {
+                    val tid = data.getString("transactionId")
+                    val mStop = data.getDouble("meterStop").toFloat()
+                    TransactionRepository.updateSession(tid, mStop, System.currentTimeMillis(), "Completed")
+                    _bridgeDetectedState.value = 0 // STATE_AVAILABLE
+                }
+                "MeterValues" -> {
+                    val tid = data.optString("transactionId")
+                    if (tid.isNotEmpty()) {
+                        val mv = data.optJSONObject("meterValue")
+                        val mCurrent = mv?.optDouble("e")?.toFloat() ?: 0f
+                        TransactionRepository.addMeterValue(tid, mCurrent)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            LogRepository.append("Error handling OCPP: ${e.message}")
         }
     }
 

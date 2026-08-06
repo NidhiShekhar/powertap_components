@@ -30,3 +30,18 @@ data class MeterData(
     val frequency: Float,   // f
     val timestamp: Long = System.currentTimeMillis()
 )
+
+/** Represents a single charging session. */
+data class ChargingSession(
+    val transactionId: String,
+    val deviceId: String,
+    val startTime: Long,
+    var stopTime: Long? = null,
+    val meterStart: Float,
+    var meterStop: Float? = null,
+    var mode: String? = "full",
+    var status: String = "Active"
+) {
+    val energyConsumed: Float
+        get() = (meterStop ?: meterStart) - meterStart
+}

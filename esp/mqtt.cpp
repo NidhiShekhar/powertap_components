@@ -12,7 +12,7 @@
 #include <HardwareSerial.h>
 #include <ArduinoJson.h>
 
-StaticJsonDocument<300>           mJSONDocManager;
+StaticJsonDocument<1024>          mJSONDocManager;
 
 /* Typedef -------------------------------------------------------------------*/
 char *gcmd[] = {
@@ -77,10 +77,17 @@ void MeterValues_Request(uint8_t *ptr);
 void DataTransfer_Request(uint8_t *Ptr);
 void BootNotification_Response(uint8_t *ptr);
 void DataTransfer_Response(uint8_t *ptr);
-void RemoteStart_Request(uint8_t *ptr);
+void RemoteStart_Request(uint8_t *ptr)
+{
+  String out = composeRemoteStartResponse();
+  strcpy((char *)ptr, out.c_str());
+}
 
-void RemoteStop_Request(uint8_t *ptr);
-
+void RemoteStop_Request(uint8_t *ptr)
+{
+  String out = composeRemoteStopResponse();
+  strcpy((char *)ptr, out.c_str());
+}
 
 void Dummy_Function(uint8_t *ptr);
 void startPowerTap();
@@ -94,7 +101,9 @@ Commands gMqttCmd[] = {
   { StatusNotification_Request,   Dummy_Function },
   { MeterValues_Request,          Dummy_Function },
   { DataTransfer_Request,         DataTransfer_Response },
-  { Dummy_Function,               Dummy_Function }
+  { RemoteStart_Request,          Dummy_Function }, // StartTransaction
+  { RemoteStop_Request,           Dummy_Function }, // StopTransaction
+  { Dummy_Function,               Dummy_Function }  // Extra safety
 };
 
 
@@ -839,7 +848,18 @@ static void Tx_Start(void)
 static void Transmit_TaskHandler(void)
 {
   if (gTxState == TX_IDLE) {
-    Tx_Start();
+    // Only start a transmission if we have a way to send it
+    if (gFlags.WiFiConnected || gFlags.BTConnected) {
+      Tx_Start();
+    }
+    return;
+  }
+
+  // If we lost both connections while waiting for a response,
+  // we might want to reset the retry timer or just wait.
+  // For now, let's just not increment retry count if not connected.
+  if (!gFlags.WiFiConnected && !gFlags.BTConnected) {
+    gCmdStartTime = millis(); // Reset start time to wait for reconnection
     return;
   }
 
@@ -853,11 +873,12 @@ static void Transmit_TaskHandler(void)
     } else {
       uint8_t txBuf[MQTT_BUFFER_SIZE] = {0};
       gCmdStartTime = millis();
-      gMqttCmd[gActiveCmd->cmd].request(txBuf);
-      SendData(txBuf);
-      DEBUG_PRINT(DEBUG_MIN, "TX Message => %s", (char *)txBuf);
-      DEBUG_PRINT(DEBUG_MIN, "Retry Count => %d", gRetryCount);
-
+      if (gMqttCmd[gActiveCmd->cmd].request) {
+        gMqttCmd[gActiveCmd->cmd].request(txBuf);
+        SendData(txBuf);
+        DEBUG_PRINT(DEBUG_MIN, "TX Message => %s", (char *)txBuf);
+        DEBUG_PRINT(DEBUG_MIN, "Retry Count => %d", gRetryCount);
+      }
     }
   }
 }
@@ -885,10 +906,16 @@ void startPowerTap(){
 
       gFlags.Relay = true;
       gMeteringInterval = 3000; /* get Meetering value every 3 seconds when relay is ON */
+
+      // Safety delay: Allow network packets (ACKs) to clear before relay noise
+      delay(100);
+
       MCU_Cmd_Enqueue(CMD_RELAY, (const uint8_t *)"1", 1);
       giStartEnergy =  gMetroData.energyActive;
       gDeviceState.iStartTime = millis();
       gDeviceState.iStartEnergy = gMetroData.energyActive + gDeviceState.iEnergy;      
+
+      RadioCmd_Enqueue(RemoteStart); // Send StartTransaction
 }
 
 
@@ -897,6 +924,8 @@ void stopPowerTap(StopReason reason){
       gMeteringInterval = 10000; /* get Meetering value every 10 seconds when relay is OFF */
       MCU_Cmd_Enqueue(CMD_RELAY, (const uint8_t *)"0", 1);
       gDeviceState.iStopReason = reason ;   
+
+      RadioCmd_Enqueue(RemoteStop); // Send StopTransaction
 }
 
 static void Receive_TaskHandler(void)
@@ -977,12 +1006,18 @@ if (arrPacket[1].is<const char*>()) {
       const char* mode      = payload["mode"]|"full";
       const bool isARC = payload["arc"] | true;  // Auto Resume Charging
 
-      DEBUG_PRINT(DEBUG_MIN, "tid %s, mode: %s, ARC = %d", tid, mode, isARC ); 
+      DEBUG_PRINT(DEBUG_MIN, "RemoteStart: tid=%s, mode=%s, ARC=%d", tid, mode, isARC );
 
       if(strlen(tid) == 0){
-        // Missing Transaction id
+        DEBUG_PRINT(DEBUG_MIN, "Error: RemoteStart missing transaction id (tid)");
         return;
       } 
+
+      // Send CallResult (Type 3) to acknowledge RemoteStart
+      uint8_t resBuf[128];
+      sprintf((char*)resBuf, "[3,\"%llu\",{\"status\":\"Accepted\"}]", msgId);
+      SendData(resBuf);
+
       //TBD Put code to make Relay on
       gDeviceState.isARC = true;
       strcpy(gDeviceState.strTID,tid);
@@ -990,13 +1025,14 @@ if (arrPacket[1].is<const char*>()) {
         gDeviceState.iChargingMode = 0;
         DEBUG_PRINT(DEBUG_MIN, "tid %s, mode: %s", tid, mode ); 
       }else if(strcmp(mode, "time" ) == 0){
-        DEBUG_PRINT(DEBUG_MIN, "tid %s, mode: %s, time:%d", tid, mode, payload["time"] ); 
+        int timeMinutes = payload["time"];
+        DEBUG_PRINT(DEBUG_MIN, "tid %s, mode: %s, time:%d min", tid, mode, timeMinutes );
         gDeviceState.iChargingMode = 1;
-        gDeviceState.iTargetValue = payload["time"];
-        gDeviceState.iTargetValue *= 1000; // Converting seconds to milli seconds
-      }else if(strcmp(mode, "energy" ) == 0){
-        DEBUG_PRINT(DEBUG_MIN, "tid %s, mode: %s, energy:%d", tid, mode, payload["units"] ); 
-        gDeviceState.iTargetValue = payload["energy"];
+        gDeviceState.iTargetValue = (uint32_t)timeMinutes * 60 * 1000; // Min to ms
+      }else if(strcmp(mode, "units" ) == 0){
+        int energyKWh = payload["units"];
+        DEBUG_PRINT(DEBUG_MIN, "tid %s, mode: %s, energy:%d kWh", tid, mode, energyKWh );
+        gDeviceState.iTargetValue = (uint32_t)energyKWh * 1000; // kWh to Wh
         gDeviceState.iChargingMode = 2;
       }
 
@@ -1007,7 +1043,12 @@ if (arrPacket[1].is<const char*>()) {
          
       JsonObject payload    = arrPacket[3];
       const char* tid       = payload["tid"];  
-               
+
+      // Send CallResult (Type 3) to acknowledge RemoteStop
+      uint8_t resBuf[128];
+      sprintf((char*)resBuf, "[3,\"%llu\",{\"status\":\"Accepted\"}]", msgId);
+      SendData(resBuf);
+
       stopPowerTap(STOP_REASON_REMOTE);
 
     }

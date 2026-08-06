@@ -19,11 +19,10 @@ class TwoLineLCDView @JvmOverloads constructor(
 
     init {
         orientation = VERTICAL
-        // Note: R.drawable.lcd_background needs to be created
         background = ContextCompat.getDrawable(context, R.drawable.lcd_background)
         backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(context, R.color.lcd_green))
 
-        setPadding(32, 32, 32, 32)
+        setPadding(24, 16, 24, 16)
 
         line1.orientation = HORIZONTAL
         line2.orientation = HORIZONTAL
@@ -32,35 +31,42 @@ class TwoLineLCDView @JvmOverloads constructor(
         addView(line2)
     }
 
-    fun setLine(linearLayout: LinearLayout, segments: List<LCDSegment>) {
+    private fun setLine(linearLayout: LinearLayout, segments: List<LCDSegment>) {
         linearLayout.removeAllViews()
         segments.forEach { segment ->
-            val tv = TextView(context)
-            tv.setPadding(20, 0, 20, 0)
-            tv.text = segment.text
-            tv.setTextColor(ContextCompat.getColor(context, R.color.black))
-            tv.setTextSize(
-                android.util.TypedValue.COMPLEX_UNIT_SP,
-                segment.fontSize
-            )
-            tv.setTypeface(null, Typeface.BOLD)
-            if (segment.bold) {
-                tv.setTypeface(null, Typeface.BOLD)
+            val container = LinearLayout(context)
+            container.orientation = VERTICAL
+            val containerParams = LayoutParams(0, LayoutParams.WRAP_CONTENT, segment.weight)
+            container.layoutParams = containerParams
+
+            // Optional Label/Title
+            if (!segment.label.isNullOrEmpty()) {
+                val labelTv = TextView(context)
+                labelTv.text = segment.label
+                labelTv.setTextColor(ContextCompat.getColor(context, R.color.black))
+                labelTv.alpha = 0.6f
+                labelTv.textSize = 10f
+                labelTv.gravity = when(segment.align) {
+                    Align.LEFT -> Gravity.START
+                    Align.CENTER -> Gravity.CENTER
+                    Align.RIGHT -> Gravity.END
+                }
+                container.addView(labelTv)
             }
 
-            tv.gravity = when(segment.align) {
+            val valueTv = TextView(context)
+            valueTv.text = segment.text
+            valueTv.setTextColor(ContextCompat.getColor(context, R.color.black))
+            valueTv.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, segment.fontSize)
+            valueTv.setTypeface(null, if (segment.bold) Typeface.BOLD else Typeface.NORMAL)
+            valueTv.gravity = when(segment.align) {
                 Align.LEFT -> Gravity.START
                 Align.CENTER -> Gravity.CENTER
                 Align.RIGHT -> Gravity.END
             }
+            container.addView(valueTv)
 
-            val params = LayoutParams(
-                0,
-                LayoutParams.WRAP_CONTENT,
-                segment.weight
-            )
-            tv.layoutParams = params
-            linearLayout.addView(tv)
+            linearLayout.addView(container)
         }
     }
 

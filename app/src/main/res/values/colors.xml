@@ -10,4 +10,5 @@
     <color name="gray_light">#F4F6F6</color>
     <color name="slider_bg">#EEEEEE</color>
     <color name="tab_indicator">#2f4a7c</color>
+    <color name="google_blue">#4285F4</color>
 </resources>

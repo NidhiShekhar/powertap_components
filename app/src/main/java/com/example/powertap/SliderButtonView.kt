@@ -1,10 +1,13 @@
 package com.drivool.iot.powertap
 
+import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.*
 import android.util.AttributeSet
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
+import android.view.animation.DecelerateInterpolator
 import kotlin.math.max
 import kotlin.math.min
 
@@ -18,73 +21,102 @@ class SliderButtonView @JvmOverloads constructor(
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG)
 
     private var handleRadius = 0f
-    private var handleX = 0f
+    private var handleX = -1f
 
     private var dragging = false
     private var active = true
+    private var locked = false
     val isActive: Boolean get() = active
+    val isLocked: Boolean get() = locked
+
     private var sliderText = "Device is offline"
-    private var showLoader = false
-    private var currentState = "LEFT"
+    private var currentState = "LEFT" // "LEFT" or "RIGHT"
+    
     var onSlideRight: (() -> Unit)? = null
     var onSlideLeft: (() -> Unit)? = null
 
+    private var animator: ValueAnimator? = null
+
     init {
-        bgPaint.color = Color.parseColor("#15A615") // Initial Green
+        bgPaint.color = Color.parseColor("#15A615")
         handlePaint.color = Color.WHITE
-        textPaint.color = Color.BLACK
+        textPaint.color = Color.WHITE
         textPaint.textSize = 28f
         textPaint.textAlign = Paint.Align.CENTER
+        textPaint.isFakeBoldText = true
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        handleRadius = h / 2f - 6f
+        // Set initial position without animation
+        handleX = if (currentState == "LEFT") handleRadius + 6f else width - handleRadius - 6f
+    }
+
+    private fun updateHandlePosition(animated: Boolean) {
+        if (width == 0) return
+        val targetX = if (currentState == "LEFT") handleRadius + 6f else width - handleRadius - 6f
+        
+        if (animated) {
+            animator?.cancel()
+            animator = ValueAnimator.ofFloat(handleX, targetX).apply {
+                duration = 250
+                interpolator = DecelerateInterpolator()
+                addUpdateListener {
+                    handleX = it.animatedValue as Float
+                    invalidate()
+                }
+                start()
+            }
+        } else {
+            handleX = targetX
+            invalidate()
+        }
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        handleRadius = height / 2f - 6f
-        if (handleX == 0f) {
+        if (height == 0 || width == 0) return
+
+        // Safety check for handleX
+        if (handleX == -1f) {
+            handleRadius = height / 2f - 6f
             handleX = if (currentState == "LEFT") handleRadius + 6f else width - handleRadius - 6f
         }
+
         val grooveRect = RectF(0f, 0f, width.toFloat(), height.toFloat())
 
-        bgPaint.shader = null
+        // Background color logic
         if (!active) {
             bgPaint.color = Color.GRAY
+        } else if (locked) {
+            bgPaint.color = Color.parseColor("#888888") 
         } else if (currentState == "RIGHT") {
             bgPaint.color = Color.parseColor("#F57C20") // Orange
         } else {
             bgPaint.color = Color.parseColor("#15A615") // Green
         }
         
-        bgPaint.setShadowLayer(8f, 0f, 4f, Color.parseColor("#33000000"))
-        setLayerType(LAYER_TYPE_SOFTWARE, bgPaint)
-
         val corner = height / 2f
         canvas.drawRoundRect(grooveRect, corner, corner, bgPaint)
 
-        textPaint.color = Color.WHITE
+        // Draw text ALWAYS CENTERED in the middle of the button
         textPaint.textSize = height * 0.25f
-        textPaint.isFakeBoldText = true
-
-        canvas.drawText(sliderText, width / 2f + handleRadius/2, height / 2f - (textPaint.descent() + textPaint.ascent()) / 2, textPaint)
-
-        val handleShadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.WHITE
-            setShadowLayer(12f, 0f, 6f, Color.parseColor("#44000000"))
-        }
-        canvas.drawCircle(handleX, height / 2f, handleRadius, handleShadowPaint)
+        // Use a slight shadow for text readability
+        textPaint.setShadowLayer(2f, 1f, 1f, Color.parseColor("#44000000"))
         
-        handlePaint.shader = null
-        handlePaint.color = if (active) Color.WHITE else Color.parseColor("#DDDDDD")
+        val textY = height / 2f - (textPaint.descent() + textPaint.ascent()) / 2
+        canvas.drawText(sliderText, width / 2f, textY, textPaint)
+
+        // Handle
+        handlePaint.color = if (active && !locked) Color.WHITE else Color.parseColor("#DDDDDD")
         canvas.drawCircle(handleX, height / 2f, handleRadius, handlePaint)
 
-        val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE
-            strokeWidth = 2f
-            color = Color.parseColor("#EEEEEE")
-        }
-        canvas.drawCircle(handleX, height / 2f, handleRadius - 2f, ringPaint)
-
+        // Arrow
         val arrowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = if (!active) Color.GRAY else if (currentState == "RIGHT") Color.parseColor("#F57C20") else Color.parseColor("#15A615")
+            color = if (!active || locked) Color.GRAY 
+                    else if (currentState == "RIGHT") Color.parseColor("#F57C20") 
+                    else Color.parseColor("#15A615")
             strokeWidth = 6f
             style = Paint.Style.FILL_AND_STROKE
             strokeCap = Paint.Cap.ROUND
@@ -109,11 +141,14 @@ class SliderButtonView @JvmOverloads constructor(
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (!active) return false
+        if (!active || locked) return false
+        
         when (event.action) {
             MotionEvent.ACTION_DOWN -> {
-                if (event.x >= handleX - handleRadius * 1.5f && event.x <= handleX + handleRadius * 1.5f) {
+                // Larger touch target for the handle
+                if (event.x >= handleX - handleRadius * 2.5f && event.x <= handleX + handleRadius * 2.5f) {
                     dragging = true
+                    animator?.cancel()
                 }
                 return true
             }
@@ -123,21 +158,27 @@ class SliderButtonView @JvmOverloads constructor(
                     invalidate()
                 }
             }
-            MotionEvent.ACTION_UP -> {
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 if (dragging) {
                     dragging = false
-                    if (handleX > width * 0.7f) {
+                    val oldState = currentState
+                    // Threshold for switching state
+                    if (handleX > width * 0.5f) {
                         currentState = "RIGHT"
-                        handleX = width - handleRadius - 6f
-                        sliderText = "Slide to Stop Charging"
-                        onSlideRight?.invoke()
                     } else {
                         currentState = "LEFT"
-                        handleX = handleRadius + 6f
-                        sliderText = "Slide to Start Charging"
-                        onSlideLeft?.invoke()
                     }
-                    invalidate()
+                    
+                    updateHandlePosition(true)
+                    
+                    if (currentState != oldState) {
+                        performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                        if (currentState == "RIGHT") {
+                            onSlideRight?.invoke()
+                        } else {
+                            onSlideLeft?.invoke()
+                        }
+                    }
                 }
             }
         }
@@ -145,47 +186,37 @@ class SliderButtonView @JvmOverloads constructor(
     }
 
     fun activate(flag: Boolean) {
-        android.util.Log.d("SliderButtonView", "activate($flag), currentActive=$active")
-        val wasActive = active
-        active = flag
-        if (!active) {
-            sliderText = "Device is Offline"
-            currentState = "LEFT"
-            handleX = 0f // Will be reset to left in onDraw
-        } else if (!wasActive) {
-            // Only reset text/position if we were previously offline
-            sliderText = if (currentState == "LEFT") "Slide to Start Charging" else "Slide to Stop Charging"
-            // Reset handleX so onDraw can position it correctly based on currentState
-            handleX = 0f
+        if (active != flag) {
+            active = flag
+            invalidate()
         }
-        invalidate()
     }
 
     fun showProgress(message: String) {
         sliderText = message
-        showLoader = true
+        locked = true
         invalidate()
     }
 
     fun hideProgress() {
-        showLoader = false
-        sliderText = if (currentState == "LEFT") "Slide to start" else "Slide to stop"
+        locked = false
         invalidate()
     }
 
-    fun setState(toLeft: Boolean) {
-        if (toLeft) {
-            currentState = "LEFT"
-            handleX = handleRadius + 6f
-        } else {
-            currentState = "RIGHT"
-            handleX = width - handleRadius - 6f
+    fun setState(toLeft: Boolean, animated: Boolean = true) {
+        val newState = if (toLeft) "LEFT" else "RIGHT"
+        if (newState != currentState) {
+            currentState = newState
+            updateHandlePosition(animated)
+        } else if (!animated) {
+            updateHandlePosition(false)
         }
-        invalidate()
     }
 
     fun setText(text: String) {
-        sliderText = text
-        invalidate()
+        if (sliderText != text) {
+            sliderText = text
+            invalidate()
+        }
     }
 }
