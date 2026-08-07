@@ -5,7 +5,8 @@
     android:layout_height="wrap_content"
     android:layout_margin="8dp"
     app:cardCornerRadius="12dp"
-    app:cardElevation="4dp">
+    app:cardElevation="4dp"
+    app:cardBackgroundColor="?attr/colorSurfaceContainer">
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -22,7 +23,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="24 May 2024"
-                android:textColor="#2f4a7c"
+                android:textColor="?attr/colorPrimary"
                 android:textSize="16sp"
                 android:textStyle="bold" />
 
@@ -46,14 +47,14 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="4dp"
             android:text="ID: T1786015908624"
-            android:textColor="#666"
+            android:textColor="?attr/colorOnSurfaceVariant"
             android:textSize="12sp" />
 
         <View
             android:layout_width="match_parent"
             android:layout_height="1dp"
             android:layout_marginVertical="12dp"
-            android:background="#EEE" />
+            android:background="?attr/colorOutlineVariant" />
 
         <LinearLayout
             android:layout_width="match_parent"
@@ -71,7 +72,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:text="ENERGY GAIN"
-                    android:textColor="#999"
+                    android:textColor="?attr/colorOutline"
                     android:textSize="10sp" />
 
                 <TextView
@@ -79,7 +80,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:text="3.45 kWh"
-                    android:textColor="#2E7D32"
+                    android:textColor="@color/status_success"
                     android:textSize="20sp"
                     android:textStyle="bold" />
             </LinearLayout>
@@ -94,7 +95,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:text="DURATION"
-                    android:textColor="#999"
+                    android:textColor="?attr/colorOutline"
                     android:textSize="10sp" />
 
                 <TextView
@@ -102,7 +103,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:text="1h 20m"
-                    android:textColor="#333"
+                    android:textColor="?attr/colorOnSurface"
                     android:textSize="20sp" />
             </LinearLayout>
         </LinearLayout>
@@ -119,7 +120,7 @@
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:text="Started: 10:30 AM"
-                android:textColor="#555"
+                android:textColor="?attr/colorOnSurfaceVariant"
                 android:textSize="12sp" />
 
             <TextView
@@ -128,7 +129,7 @@
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:text="Stopped: 11:50 AM"
-                android:textColor="#555"
+                android:textColor="?attr/colorOnSurfaceVariant"
                 android:textSize="12sp" />
         </LinearLayout>
 
@@ -144,7 +145,7 @@
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:text="Start: 124.5 Wh"
-                android:textColor="#777"
+                android:textColor="?attr/colorOutline"
                 android:textSize="12sp" />
 
             <TextView
@@ -153,7 +154,7 @@
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:text="End: 127.95 Wh"
-                android:textColor="#777"
+                android:textColor="?attr/colorOutline"
                 android:textSize="12sp" />
         </LinearLayout>
 

@@ -17,29 +17,61 @@
             android:padding="16dp"
             android:gravity="center_horizontal">
 
-            <!-- Device Selector Dropdown -->
-            <com.google.android.material.textfield.TextInputLayout
-                style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox.ExposedDropdownMenu"
+            <!-- Device selector + add button -->
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginBottom="16dp"
-                android:hint="Selected PowerTap"
-                app:startIconDrawable="@android:drawable/ic_dialog_info"
-                app:startIconTint="?attr/colorPrimary"
-                app:boxBackgroundColor="?attr/colorSurface"
-                app:boxCornerRadiusTopStart="12dp"
-                app:boxCornerRadiusTopEnd="12dp"
-                app:boxCornerRadiusBottomStart="12dp"
-                app:boxCornerRadiusBottomEnd="12dp">
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
 
-                <AutoCompleteTextView
-                    android:id="@+id/deviceSelector"
-                    android:layout_width="match_parent"
+                <com.google.android.material.textfield.TextInputLayout
+                    style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox.ExposedDropdownMenu"
+                    android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:inputType="none"
-                    android:textSize="14sp"
-                    android:padding="12dp" />
-            </com.google.android.material.textfield.TextInputLayout>
+                    android:layout_marginEnd="8dp"
+                    android:layout_weight="1"
+                    android:hint="Selected PowerTap"
+                    app:boxBackgroundColor="?attr/colorSurface"
+                    app:boxCornerRadiusBottomEnd="12dp"
+                    app:boxCornerRadiusBottomStart="12dp"
+                    app:boxCornerRadiusTopEnd="12dp"
+                    app:boxCornerRadiusTopStart="12dp"
+                    app:startIconDrawable="@android:drawable/ic_dialog_info"
+                    app:startIconTint="?attr/colorPrimary">
+
+                    <AutoCompleteTextView
+                        android:id="@+id/deviceSelector"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:inputType="none"
+                        android:padding="12dp"
+                        android:textSize="14sp" />
+                </com.google.android.material.textfield.TextInputLayout>
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnDisconnect"
+                    style="@style/Widget.Material3.Button.IconButton.Filled.Tonal"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:layout_marginEnd="8dp"
+                    android:contentDescription="Disconnect"
+                    android:visibility="gone"
+                    app:cornerRadius="12dp"
+                    app:icon="@android:drawable/ic_menu_close_clear_cancel"
+                    app:iconSize="24dp"
+                    app:iconTint="#D32F2F" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnAddDevice"
+                    style="@style/Widget.Material3.Button.IconButton.Filled.Tonal"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:contentDescription="Add New Device"
+                    app:cornerRadius="12dp"
+                    app:icon="@android:drawable/ic_input_add"
+                    app:iconSize="24dp" />
+            </LinearLayout>
 
             <!-- LCD View (Below) -->
             <com.drivool.iot.powertap.TwoLineLCDView
@@ -55,7 +87,7 @@
                 android:layout_marginBottom="16dp"
                 app:cardCornerRadius="16dp"
                 app:cardElevation="2dp"
-                app:cardBackgroundColor="?attr/colorSurface">
+                app:cardBackgroundColor="?attr/colorSurfaceContainer">
 
                 <LinearLayout
                     android:layout_width="match_parent"
@@ -72,7 +104,7 @@
                         app:tabRippleColor="@android:color/transparent"
                         app:tabMode="fixed"
                         app:tabGravity="fill"
-                        android:background="?attr/colorSurface">
+                        android:background="?attr/colorSurfaceContainer">
                         <com.google.android.material.tabs.TabItem
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
@@ -254,8 +286,10 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="32dp"
                 android:padding="16dp"
-                android:text="Find Nearby Devices"
-                app:cornerRadius="12dp" />
+                android:text="Add New Device"
+                app:cornerRadius="12dp"
+                app:icon="@android:drawable/ic_input_add"
+                app:iconGravity="textStart" />
 
         </LinearLayout>
     </FrameLayout>

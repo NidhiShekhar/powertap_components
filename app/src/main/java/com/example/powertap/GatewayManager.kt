@@ -55,6 +55,38 @@ object GatewayManager {
 
     private var lastHeartbeatTime = 0L
 
+    /** Device ID from QR/manual setup; preferred over BLE MAC guessing on connect. */
+    private var preferredDeviceId: String? = null
+
+    /**
+     * Connect to a PowerTap using details from a scanned QR code.
+     * Saves BLE + MQTT identity, then starts a targeted BLE scan/connect.
+     * @return false if Bluetooth is unavailable/disabled
+     */
+    fun connectFromQr(qr: PowerTapQr): Boolean {
+        val ctx = context ?: return false
+        val adapter = (ctx.getSystemService(Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager)?.adapter
+        if (adapter == null || !adapter.isEnabled) {
+            LogRepository.append("Gateway: QR connect aborted — Bluetooth off")
+            return false
+        }
+
+        preferredDeviceId = qr.deviceId
+        _currentDeviceId.value = qr.deviceId
+
+        val config = MqttPrefs.load(ctx)
+        MqttPrefs.save(ctx, config, qr.deviceId)
+        BlePrefs.saveLastDevice(ctx, qr.bleAddress, qr.displayName)
+
+        LogRepository.append("Gateway: QR connect → BLE ${qr.bleAddress}, deviceId ${qr.deviceId}")
+        _mqttTransport.connect(config, qr.deviceId)
+
+        // Same path as auto-connect: scan until this MAC is seen, then GATT connect.
+        bleTransport.stopScan()
+        bleTransport.startScan(qr.bleAddress)
+        return true
+    }
+
     fun init(context: Context) {
         this.context = context.applicationContext
         TransactionRepository.init(context.applicationContext)
@@ -119,13 +151,12 @@ object GatewayManager {
                         _isDeviceOnline.value = true
                         
                         // Save for auto-connect
-                        val deviceName = bleTransport.discoveredDevices.value
+                        val discoveredName = bleTransport.discoveredDevices.value
                             .find { it.address == address }?.name
-                        context?.let { BlePrefs.saveLastDevice(it, address, deviceName) }
+                        val ctx = context!!
 
-                        // Fallback: Guess ID from BLE Address (MAC)
-                        // Note: ESP32 BLE MAC is often Base MAC + 1. 
-                        // If BLE ends in :DD, the Device ID (Base MAC) is likely ...DC
+                        // Prefer QR / explicit device ID over MAC guessing.
+                        // ESP32 BLE MAC is often Base MAC (deviceId) + 1.
                         val macClean = address.replace(":", "").lowercase()
                         val guessedId = try {
                             val lastChar = macClean.last()
@@ -134,17 +165,34 @@ object GatewayManager {
                             if (lastDigit > 0) {
                                 base + (lastDigit - 1).toString(16)
                             } else {
-                                macClean // fallback
+                                macClean
                             }
                         } catch (e: Exception) {
                             macClean
                         }
-                        
-                        LogRepository.append("Bridge: Guessing Device ID from MAC: $guessedId")
-                        _currentDeviceId.value = guessedId
-                        val config = MqttPrefs.load(context!!)
-                        _mqttTransport.connect(config, guessedId)
-                        MqttPrefs.save(context!!, config, guessedId)
+
+                        val savedId = preferredDeviceId
+                            ?: MqttPrefs.loadDeviceId(ctx).takeIf { it.length == 12 }
+                        val deviceId = when {
+                            savedId != null && savedId.length == 12 -> {
+                                LogRepository.append("Bridge: Using known Device ID: $savedId")
+                                savedId
+                            }
+                            else -> {
+                                LogRepository.append("Bridge: Guessing Device ID from MAC: $guessedId")
+                                guessedId
+                            }
+                        }
+                        preferredDeviceId = null
+
+                        val deviceName = discoveredName
+                            ?: if (deviceId.length == 12) "PowerTap_$deviceId" else null
+                        BlePrefs.saveLastDevice(ctx, address, deviceName)
+
+                        _currentDeviceId.value = deviceId
+                        val config = MqttPrefs.load(ctx)
+                        _mqttTransport.connect(config, deviceId)
+                        MqttPrefs.save(ctx, config, deviceId)
                     }
                 }
             }

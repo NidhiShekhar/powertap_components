@@ -1,8 +1,6 @@
 package com.drivool.iot.powertap
 
-import android.graphics.Color
 import android.os.Bundle
-import android.view.Gravity
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
@@ -39,28 +37,39 @@ class ProfileActivity : AppCompatActivity() {
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(48, 48, 48, 48)
-            setBackgroundColor(Color.WHITE)
+            setBackgroundColor(ThemeColors.surface(this@ProfileActivity))
 
             addView(TextView(this@ProfileActivity).apply {
                 text = "Personal Details"
                 textSize = 24f
-                setTextColor(Color.BLACK)
+                setTextColor(ThemeColors.onSurface(this@ProfileActivity))
                 setPadding(0, 0, 0, 48)
             })
 
-            addView(TextView(this@ProfileActivity).apply { text = "Email: ${AuthManager.userEmail}"; textSize = 16f; setPadding(0, 0, 0, 32) })
+            addView(TextView(this@ProfileActivity).apply {
+                text = "Email: ${AuthManager.userEmail}"
+                textSize = 16f
+                setTextColor(ThemeColors.onSurfaceVariant(this@ProfileActivity))
+                setPadding(0, 0, 0, 32)
+            })
 
             nameInput = EditText(this@ProfileActivity).apply {
                 hint = "Full Name"
+                setTextColor(ThemeColors.onSurface(this@ProfileActivity))
+                setHintTextColor(ThemeColors.onSurfaceVariant(this@ProfileActivity))
                 layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 16 }
             }
             phoneInput = EditText(this@ProfileActivity).apply {
                 hint = "Phone Number"
                 inputType = android.text.InputType.TYPE_CLASS_PHONE
+                setTextColor(ThemeColors.onSurface(this@ProfileActivity))
+                setHintTextColor(ThemeColors.onSurfaceVariant(this@ProfileActivity))
                 layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 16 }
             }
             addressInput = EditText(this@ProfileActivity).apply {
                 hint = "Address"
+                setTextColor(ThemeColors.onSurface(this@ProfileActivity))
+                setHintTextColor(ThemeColors.onSurfaceVariant(this@ProfileActivity))
                 layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 32 }
             }
 
@@ -70,8 +79,8 @@ class ProfileActivity : AppCompatActivity() {
 
             addView(Button(this@ProfileActivity).apply {
                 text = "Save Details"
-                setBackgroundColor(Color.parseColor("#2f4a7c"))
-                setTextColor(Color.WHITE)
+                setBackgroundColor(ThemeColors.primary(this@ProfileActivity))
+                setTextColor(ThemeColors.onPrimary(this@ProfileActivity))
                 setOnClickListener {
                     saveUserData()
                 }

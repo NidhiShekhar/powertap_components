@@ -3,14 +3,14 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/gray_light">
+    android:background="?attr/colorSurface">
 
     <!-- Header -->
     <LinearLayout
         android:id="@+id/header"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="#DDDDDD"
+        android:background="?attr/colorSurfaceContainerHigh"
         android:elevation="4dp"
         android:gravity="center_vertical"
         android:orientation="horizontal"
@@ -23,7 +23,7 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:text="BLE: Disconnected"
-            android:textColor="@color/black"
+            android:textColor="?attr/colorOnSurface"
             android:textStyle="bold" />
 
         <Button
@@ -37,7 +37,7 @@
             android:id="@+id/connectToggleButton"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:backgroundTint="#FF4444"
+            android:backgroundTint="@color/status_error"
             android:text="DISCONNECT"
             android:textColor="@color/white"
             android:visibility="gone" />
@@ -60,22 +60,23 @@
                 android:id="@+id/autoConnectCheck"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Auto Connect to Last Device" />
+                android:text="Auto Connect to Last Device"
+                android:textColor="?attr/colorOnSurface" />
 
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
                 android:text="Known Devices (Previous)"
-                android:textColor="#666666"
+                android:textColor="?attr/colorOnSurfaceVariant"
                 android:textSize="12sp" />
 
             <ListView
                 android:id="@+id/knownListView"
                 android:layout_width="match_parent"
                 android:layout_height="120dp"
-                android:background="@color/white"
-                android:divider="#EEEEEE"
+                android:background="?attr/colorSurfaceContainer"
+                android:divider="?attr/colorOutlineVariant"
                 android:dividerHeight="1dp" />
 
             <TextView
@@ -83,15 +84,15 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="16dp"
                 android:text="Discovered Devices (Click to connect)"
-                android:textColor="#666666"
+                android:textColor="?attr/colorOnSurfaceVariant"
                 android:textSize="12sp" />
 
             <ListView
                 android:id="@+id/deviceListView"
                 android:layout_width="match_parent"
                 android:layout_height="160dp"
-                android:background="@color/white"
-                android:divider="#EEEEEE"
+                android:background="?attr/colorSurfaceContainer"
+                android:divider="?attr/colorOutlineVariant"
                 android:dividerHeight="1dp" />
 
             <TextView
@@ -99,7 +100,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="24dp"
                 android:text="SEND PACKET TO ESP (BLE)"
-                android:textColor="@color/primary_blue"
+                android:textColor="?attr/colorPrimary"
                 android:textStyle="bold" />
 
             <EditText
@@ -107,11 +108,13 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
-                android:background="#F0F0F0"
+                android:background="?attr/colorSurfaceContainerHighest"
                 android:gravity="top"
                 android:hint="Enter JSON packet here..."
                 android:minLines="3"
                 android:padding="8dp"
+                android:textColor="?attr/colorOnSurface"
+                android:textColorHint="?attr/colorOnSurfaceVariant"
                 android:textSize="14sp" />
 
             <Button
@@ -137,7 +140,7 @@
         android:id="@+id/logsHeader"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="#444444"
+        android:background="@color/bg_logs_bar"
         android:gravity="center_vertical"
         android:orientation="horizontal"
         android:paddingHorizontal="12dp"
@@ -166,6 +169,7 @@
         android:id="@+id/logsContainer"
         android:layout_width="match_parent"
         android:layout_height="200dp"
+        android:background="?attr/colorSurfaceContainer"
         android:baselineAligned="false"
         android:orientation="horizontal"
         app:layout_constraintBottom_toBottomOf="parent">
@@ -175,30 +179,63 @@
             android:layout_height="match_parent"
             android:layout_weight="1"
             android:orientation="vertical">
-            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="App" android:gravity="center" android:textSize="10sp" />
-            <ListView android:id="@+id/appLogListView" android:layout_width="match_parent" android:layout_height="match_parent" />
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="App"
+                android:gravity="center"
+                android:textSize="10sp"
+                android:textColor="?attr/colorOnSurfaceVariant" />
+            <ListView
+                android:id="@+id/appLogListView"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent" />
         </LinearLayout>
 
-        <View android:layout_width="1dp" android:layout_height="match_parent" android:background="#CCCCCC" />
+        <View
+            android:layout_width="1dp"
+            android:layout_height="match_parent"
+            android:background="?attr/colorOutlineVariant" />
 
         <LinearLayout
             android:layout_width="0dp"
             android:layout_height="match_parent"
             android:layout_weight="1"
             android:orientation="vertical">
-            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Out" android:gravity="center" android:textSize="10sp" android:textColor="#388E3C" />
-            <ListView android:id="@+id/bleOutgoingListView" android:layout_width="match_parent" android:layout_height="match_parent" />
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Out"
+                android:gravity="center"
+                android:textSize="10sp"
+                android:textColor="@color/status_success" />
+            <ListView
+                android:id="@+id/bleOutgoingListView"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent" />
         </LinearLayout>
 
-        <View android:layout_width="1dp" android:layout_height="match_parent" android:background="#CCCCCC" />
+        <View
+            android:layout_width="1dp"
+            android:layout_height="match_parent"
+            android:background="?attr/colorOutlineVariant" />
 
         <LinearLayout
             android:layout_width="0dp"
             android:layout_height="match_parent"
             android:layout_weight="1"
             android:orientation="vertical">
-            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="In" android:gravity="center" android:textSize="10sp" android:textColor="#2196F3" />
-            <ListView android:id="@+id/bleIncomingListView" android:layout_width="match_parent" android:layout_height="match_parent" />
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="In"
+                android:gravity="center"
+                android:textSize="10sp"
+                android:textColor="@color/google_blue" />
+            <ListView
+                android:id="@+id/bleIncomingListView"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent" />
         </LinearLayout>
     </LinearLayout>
 

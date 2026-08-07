@@ -3,7 +3,7 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:background="#F5F7FA">
+    android:background="?attr/colorSurface">
 
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/history_recycler"
@@ -19,7 +19,7 @@
         android:layout_height="match_parent"
         android:gravity="center"
         android:text="No charging history found"
-        android:textColor="#888"
+        android:textColor="?attr/colorOnSurfaceVariant"
         android:textSize="16sp"
         android:visibility="gone" />
 

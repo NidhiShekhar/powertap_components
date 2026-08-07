@@ -15,10 +15,12 @@
             android:id="@+id/toolbar"
             android:layout_width="match_parent"
             android:layout_height="?attr/actionBarSize"
-            android:background="#2f4a7c"
+            android:background="?attr/colorPrimary"
             app:title="PowerTap"
-            app:titleTextColor="@android:color/white"
-            app:navigationIcon="@drawable/ic_menu" />
+            app:titleTextColor="?attr/colorOnPrimary"
+            app:navigationIcon="@drawable/ic_menu"
+            app:navigationIconTint="?attr/colorOnPrimary"
+            app:iconTint="?attr/colorOnPrimary" />
 
         <FrameLayout
             android:id="@+id/fragment_container"
@@ -32,6 +34,9 @@
         android:layout_width="wrap_content"
         android:layout_height="match_parent"
         android:layout_gravity="start"
+        android:background="?attr/colorSurface"
+        app:itemIconTint="?attr/colorOnSurfaceVariant"
+        app:itemTextColor="?attr/colorOnSurface"
         app:headerLayout="@layout/nav_header"
         app:menu="@menu/drawer_menu" />
 

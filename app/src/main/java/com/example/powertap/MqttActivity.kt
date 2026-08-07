@@ -15,6 +15,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -23,7 +24,6 @@ import com.drivool.iot.powertap.contract.PtContract
 import com.drivool.iot.powertap.mqtt.MqttConfig
 import com.drivool.iot.powertap.mqtt.MqttPrefs
 import com.drivool.iot.powertap.mqtt.MqttTransport
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 
 class MqttActivity : AppCompatActivity() {
@@ -83,16 +83,17 @@ class MqttActivity : AppCompatActivity() {
     private fun buildUi(): View {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            setBackgroundColor(ThemeColors.surface(this@MqttActivity))
         }
 
         // Top Header with Connect Toggle
         val header = FrameLayout(this).apply {
             setPadding(30, 20, 30, 20)
-            setBackgroundColor(Color.LTGRAY)
+            setBackgroundColor(ThemeColors.surfaceContainerHigh(this@MqttActivity))
         }
         statusView = TextView(this).apply {
             text = "MQTT: Disconnected"
-            setTextColor(Color.BLACK)
+            setTextColor(ThemeColors.onSurface(this@MqttActivity))
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -101,8 +102,8 @@ class MqttActivity : AppCompatActivity() {
         }
         connectButton = Button(this).apply {
             text = "CONNECT"
-            setBackgroundColor(Color.RED)
-            setTextColor(Color.WHITE)
+            setBackgroundColor(ThemeColors.error(this@MqttActivity))
+            setTextColor(ContextCompat.getColor(this@MqttActivity, R.color.white))
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -132,6 +133,7 @@ class MqttActivity : AppCompatActivity() {
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(30, 10, 30, 10)
+            setBackgroundColor(ThemeColors.surface(this@MqttActivity))
         }
         scroll.addView(content)
 
@@ -155,7 +157,11 @@ class MqttActivity : AppCompatActivity() {
         }
 
         content.addView(bridgeToggle)
-        content.addView(TextView(this).apply { text = "Broker Settings"; textSize = 14f; setTextColor(Color.BLUE) })
+        content.addView(TextView(this).apply {
+            text = "Broker Settings"
+            textSize = 14f
+            setTextColor(ThemeColors.primary(this@MqttActivity))
+        })
 
         // Two-column Broker Settings
         val row1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -182,7 +188,7 @@ class MqttActivity : AppCompatActivity() {
         content.addView(TextView(this).apply { 
             text = "MANUAL PACKET (JSON ARRAY)"; 
             textSize = 13f; 
-            setTextColor(Color.BLUE) 
+            setTextColor(ThemeColors.primary(this@MqttActivity))
         })
         manualPacketInput = EditText(this).apply {
             hint = "Enter JSON packet here..."
@@ -190,13 +196,15 @@ class MqttActivity : AppCompatActivity() {
             layoutParams = wrap
             minLines = 2
             gravity = Gravity.TOP
-            setBackgroundColor(Color.parseColor("#F0F0F0"))
+            setBackgroundColor(ThemeColors.surfaceContainerHighest(this@MqttActivity))
+            setTextColor(ThemeColors.onSurface(this@MqttActivity))
+            setHintTextColor(ThemeColors.onSurfaceVariant(this@MqttActivity))
             textSize = 12f
         }
         val sendManualButton = Button(this).apply {
             text = "SEND PACKET TO SERVER"
-            setBackgroundColor(Color.parseColor("#4CAF50"))
-            setTextColor(Color.WHITE)
+            setBackgroundColor(ContextCompat.getColor(this@MqttActivity, R.color.status_success))
+            setTextColor(ContextCompat.getColor(this@MqttActivity, R.color.white))
             layoutParams = wrap
             setOnClickListener {
                 val msg = manualPacketInput.text.toString()
@@ -214,10 +222,11 @@ class MqttActivity : AppCompatActivity() {
         val logsHeader = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(20, 10, 20, 10)
-            setBackgroundColor(Color.DKGRAY)
+            setBackgroundColor(ContextCompat.getColor(this@MqttActivity, R.color.bg_logs_bar))
         }
         logsHeader.addView(TextView(this).apply { 
-            text = "LOGS"; setTextColor(Color.WHITE); 
+            text = "LOGS"
+            setTextColor(ContextCompat.getColor(this@MqttActivity, R.color.white))
             layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { gravity = Gravity.CENTER_VERTICAL }
         })
         val clearLogsButton = Button(this).apply {
@@ -238,6 +247,7 @@ class MqttActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1.5f
             )
+            setBackgroundColor(ThemeColors.surfaceContainer(this@MqttActivity))
         }
 
         // 1. Gateway & Outbound Logs
@@ -246,11 +256,13 @@ class MqttActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
             )
-            setBackgroundColor(Color.parseColor("#F9F9F9"))
+            setBackgroundColor(ThemeColors.surfaceContainer(this@MqttActivity))
         }
         gatewayTitle = TextView(this).apply { 
             text = "GATEWAY → ${PtContract.TOPIC_PACKET}"; 
-            gravity = Gravity.CENTER; textSize = 10f; setTextColor(Color.DKGRAY) 
+            gravity = Gravity.CENTER
+            textSize = 10f
+            setTextColor(ThemeColors.onSurfaceVariant(this@MqttActivity))
         }
         gatewaySection.addView(gatewayTitle)
         gatewayLogAdapter = createLogAdapter()
@@ -271,7 +283,10 @@ class MqttActivity : AppCompatActivity() {
             setPadding(2, 0, 2, 0)
         }
         cmdTitle = TextView(this).apply { 
-            text = "CMD: ${PtContract.TOPIC_COMMAND}"; gravity = Gravity.CENTER; textSize = 9f; setTextColor(Color.BLUE) 
+            text = "CMD: ${PtContract.TOPIC_COMMAND}"
+            gravity = Gravity.CENTER
+            textSize = 9f
+            setTextColor(ThemeColors.primary(this@MqttActivity))
         }
         cmdLayout.addView(cmdTitle)
         commandLogAdapter = createLogAdapter()
@@ -283,7 +298,10 @@ class MqttActivity : AppCompatActivity() {
             setPadding(2, 0, 2, 0)
         }
         ackTitle = TextView(this).apply { 
-            text = "ACKS: (none)"; gravity = Gravity.CENTER; textSize = 9f; setTextColor(Color.parseColor("#388E3C")) 
+            text = "ACKS: (none)"
+            gravity = Gravity.CENTER
+            textSize = 9f
+            setTextColor(ContextCompat.getColor(this@MqttActivity, R.color.status_success))
         }
         ackLayout.addView(ackTitle)
         ackLogAdapter = createLogAdapter()
@@ -308,11 +326,11 @@ class MqttActivity : AppCompatActivity() {
                 setPadding(8, 8, 8, 8)
                 
                 when {
-                    text.contains("Published ->") -> setTextColor(Color.parseColor("#006400")) // Dark Green
-                    text.contains("Bridge: BLE -> MQTT") -> setTextColor(Color.parseColor("#8B008B")) // Magenta
-                    text.contains("Bridge: MQTT -> BLE") -> setTextColor(Color.BLUE)
-                    text.contains("Error") || text.contains("failed") -> setTextColor(Color.RED)
-                    else -> setTextColor(Color.BLACK)
+                    text.contains("Published ->") -> setTextColor(ContextCompat.getColor(context, R.color.status_success))
+                    text.contains("Bridge: BLE -> MQTT") -> setTextColor(Color.parseColor("#CE93D8"))
+                    text.contains("Bridge: MQTT -> BLE") -> setTextColor(ThemeColors.primary(context))
+                    text.contains("Error") || text.contains("failed") -> setTextColor(ThemeColors.error(context))
+                    else -> setTextColor(ThemeColors.onSurface(context))
                 }
             }
             return v
@@ -323,6 +341,8 @@ class MqttActivity : AppCompatActivity() {
         EditText(this).apply {
             this.hint = hint
             layoutParams = params
+            setTextColor(ThemeColors.onSurface(this@MqttActivity))
+            setHintTextColor(ThemeColors.onSurfaceVariant(this@MqttActivity))
         }
 
     private fun observeTransport() {
@@ -333,7 +353,9 @@ class MqttActivity : AppCompatActivity() {
                         statusView.text = "MQTT: $state"
                         if (state == ConnectionState.Connected) {
                             connectButton.text = "DISCONNECT"
-                            connectButton.setBackgroundColor(Color.parseColor("#4CAF50")) // Green
+                            connectButton.setBackgroundColor(
+                                ContextCompat.getColor(this@MqttActivity, R.color.status_success)
+                            )
                             
                             // Update titles with actual topics
                             val id = MqttPrefs.loadDeviceId(this@MqttActivity)
@@ -344,7 +366,7 @@ class MqttActivity : AppCompatActivity() {
                             }
                         } else {
                             connectButton.text = "CONNECT"
-                            connectButton.setBackgroundColor(Color.RED)
+                            connectButton.setBackgroundColor(ThemeColors.error(this@MqttActivity))
                         }
                     }
                 }

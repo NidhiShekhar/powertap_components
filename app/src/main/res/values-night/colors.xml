@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Slightly lifted brand blue for contrast on dark surfaces -->
+    <color name="primary_blue">#6B8AC4</color>
+    <color name="tab_indicator">#6B8AC4</color>
+    <color name="status_success">#66BB6A</color>
+    <color name="accent_lavender">#9B7ED9</color>
+
+    <!-- Semantic UI — dark -->
+    <color name="bg_canvas">#121212</color>
+    <color name="bg_card">#1E1E1E</color>
+    <color name="bg_header">#2C2C2C</color>
+    <color name="bg_input">#2A2A2A</color>
+    <color name="bg_logs_bar">#1A1A1A</color>
+    <color name="text_primary">#E8E8E8</color>
+    <color name="text_secondary">#B0B0B0</color>
+    <color name="text_tertiary">#8A8A8A</color>
+    <color name="divider">#333333</color>
+    <color name="icon_circle_bg">#2A2A2A</color>
+    <color name="tab_dot_unselected">#55AAAAAA</color>
+
+    <color name="gray_light">@color/bg_canvas</color>
+    <color name="slider_bg">#2A2A2A</color>
+</resources>

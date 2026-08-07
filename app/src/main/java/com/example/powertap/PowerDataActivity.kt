@@ -1,6 +1,5 @@
 package com.drivool.iot.powertap
 
-import android.graphics.Color
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
@@ -13,8 +12,6 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.drivool.iot.powertap.contract.MeterData
 import kotlinx.coroutines.launch
-import org.json.JSONArray
-import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -38,13 +35,13 @@ class PowerDataActivity : AppCompatActivity() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(32, 32, 32, 32)
-            setBackgroundColor(Color.parseColor("#F5F5F5"))
+            setBackgroundColor(ThemeColors.surface(this@PowerDataActivity))
         }
 
         val title = TextView(this).apply {
             text = "LIVE METER DATA"
             textSize = 20f
-            setTextColor(Color.BLACK)
+            setTextColor(ThemeColors.onSurface(this@PowerDataActivity))
             gravity = Gravity.CENTER
             setPadding(0, 0, 0, 32)
         }
@@ -53,7 +50,7 @@ class PowerDataActivity : AppCompatActivity() {
         // Real-time grid
         val grid = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.WHITE)
+            setBackgroundColor(ThemeColors.surfaceContainer(this@PowerDataActivity))
             setPadding(24, 24, 24, 24)
             elevation = 4f
         }
@@ -69,7 +66,7 @@ class PowerDataActivity : AppCompatActivity() {
         val historyTitle = TextView(this).apply {
             text = "HISTORY"
             textSize = 16f
-            setTextColor(Color.DKGRAY)
+            setTextColor(ThemeColors.onSurfaceVariant(this@PowerDataActivity))
             setPadding(0, 48, 0, 16)
         }
         root.addView(historyTitle)
@@ -81,6 +78,7 @@ class PowerDataActivity : AppCompatActivity() {
                 return TextView(context).apply {
                     setPadding(16, 16, 16, 16)
                     textSize = 12f
+                    setTextColor(ThemeColors.onSurface(context))
                     text = "$time -> V:${data.voltage} C:${data.current} P:${data.power} E:${data.energy} F:${data.frequency}"
                 }
             }
@@ -103,11 +101,11 @@ class PowerDataActivity : AppCompatActivity() {
         row.addView(TextView(this).apply {
             text = "$label:"
             layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
-            setTextColor(Color.GRAY)
+            setTextColor(ThemeColors.onSurfaceVariant(this@PowerDataActivity))
         })
         val valueView = TextView(this).apply {
             text = "--- $unit"
-            setTextColor(Color.BLACK)
+            setTextColor(ThemeColors.onSurface(this@PowerDataActivity))
             textSize = 18f
         }
         row.addView(valueView)

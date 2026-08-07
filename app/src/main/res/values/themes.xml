@@ -1,9 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources xmlns:tools="http://schemas.android.com/tools">
     <style name="Base.Theme.PowerTap" parent="Theme.Material3.DayNight.NoActionBar">
         <item name="colorPrimary">@color/primary_blue</item>
         <item name="colorOnPrimary">@color/white</item>
+        <item name="colorSecondary">@color/primary_blue</item>
+        <item name="colorOnSecondary">@color/white</item>
+
+        <item name="colorSurface">@color/bg_canvas</item>
+        <item name="colorOnSurface">@color/text_primary</item>
+        <item name="colorOnSurfaceVariant">@color/text_secondary</item>
+        <item name="colorSurfaceContainer">@color/bg_card</item>
+        <item name="colorSurfaceContainerLow">@color/bg_canvas</item>
+        <item name="colorSurfaceContainerHigh">@color/bg_header</item>
+        <item name="colorSurfaceContainerHighest">@color/bg_input</item>
+        <item name="colorOutline">@color/text_tertiary</item>
+        <item name="colorOutlineVariant">@color/divider</item>
+
+        <item name="android:colorBackground">@color/bg_canvas</item>
+        <item name="android:windowBackground">@color/bg_canvas</item>
         <item name="android:statusBarColor">?attr/colorPrimary</item>
-        <item name="android:windowBackground">?attr/colorSurface</item>
+        <item name="android:navigationBarColor">@color/bg_canvas</item>
+        <item name="android:windowLightStatusBar" tools:targetApi="m">false</item>
+        <item name="android:windowLightNavigationBar" tools:targetApi="o_mr1">true</item>
+
+        <item name="colorError">@color/status_error</item>
+        <item name="android:textColorPrimary">@color/text_primary</item>
+        <item name="android:textColorSecondary">@color/text_secondary</item>
     </style>
 
     <style name="Theme.PowerTap" parent="Base.Theme.PowerTap" />

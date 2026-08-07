@@ -9,6 +9,11 @@
         android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
 
     <application
         android:allowBackup="true"
@@ -40,6 +45,9 @@
             android:exported="false" />
         <activity android:name=".OnboardingActivity" />
         <activity android:name=".DeviceScanActivity" />
+        <activity
+            android:name=".QrScanActivity"
+            android:screenOrientation="portrait" />
         <activity android:name=".LogActivity" />
         <activity android:name=".MqttActivity" />
         <activity android:name=".BleTestActivity" />

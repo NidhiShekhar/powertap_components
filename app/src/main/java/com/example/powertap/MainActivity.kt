@@ -41,6 +41,7 @@ class MainActivity : AppCompatActivity() {
         val navView: NavigationView = findViewById(R.id.nav_view)
         val toolbar: MaterialToolbar = findViewById(R.id.toolbar)
 
+        toolbar.setNavigationIcon(R.drawable.ic_menu)
         toolbar.setNavigationOnClickListener {
             drawerLayout.openDrawer(GravityCompat.START)
         }
@@ -52,7 +53,6 @@ class MainActivity : AppCompatActivity() {
                 R.id.nav_config -> replaceFragment(ConfigFragment(), "Config Panel")
                 R.id.nav_slider -> replaceFragment(SliderFragment(), "Slider Button")
                 R.id.nav_history -> replaceFragment(HistoryFragment(), "Charging History")
-                R.id.nav_scan -> startActivity(android.content.Intent(this, DeviceScanActivity::class.java))
                 R.id.nav_ble_test -> startActivity(android.content.Intent(this, BleTestActivity::class.java))
                 R.id.nav_mqtt_gateway -> startActivity(android.content.Intent(this, MqttActivity::class.java))
                 R.id.nav_power_data -> startActivity(android.content.Intent(this, PowerDataActivity::class.java))

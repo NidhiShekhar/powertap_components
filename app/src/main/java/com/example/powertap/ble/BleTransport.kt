@@ -75,17 +75,33 @@ class BleTransport(
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val device = result.device
-            val name = if (hasConnectPermission()) device.name ?: result.scanRecord?.deviceName else null
-            val entry = DiscoveredDevice(name, device.address, result.rssi)
+            val rawAddress = device.address?.uppercase() ?: return
+            val advertisedName = if (hasConnectPermission()) {
+                device.name ?: result.scanRecord?.deviceName
+            } else {
+                result.scanRecord?.deviceName
+            }
+            val entry = DiscoveredDevice(advertisedName, rawAddress, result.rssi)
             val current = _discoveredDevices.value
-            val idx = current.indexOfFirst { it.address == entry.address }
-            _discoveredDevices.value =
-                if (idx == -1) current + entry
-                else current.toMutableList().also { it[idx] = entry }
+            val idx = current.indexOfFirst {
+                it.address.equals(rawAddress, ignoreCase = true)
+            }
+            _discoveredDevices.value = if (idx == -1) {
+                current + entry
+            } else {
+                val previous = current[idx]
+                val bestName = when {
+                    scoreName(entry.name) >= scoreName(previous.name) -> entry.name ?: previous.name
+                    else -> previous.name ?: entry.name
+                }
+                current.toMutableList().also {
+                    it[idx] = previous.copy(name = bestName, rssi = entry.rssi, address = rawAddress)
+                }
+            }
 
-            if (targetAddress != null && device.address == targetAddress) {
-                log("Auto-connecting to target: ${device.address}")
-                connect(device.address)
+            if (targetAddress != null && rawAddress.equals(targetAddress, ignoreCase = true)) {
+                log("Auto-connecting to target: $rawAddress")
+                connect(rawAddress)
             }
         }
 
@@ -94,6 +110,12 @@ class BleTransport(
             scanning = false
             _connectionState.value = ConnectionState.Failed
         }
+    }
+
+    private fun scoreName(name: String?): Int = when {
+        name.isNullOrBlank() -> 0
+        name.startsWith("PowerTap_", ignoreCase = true) -> 3
+        else -> 2
     }
 
     override fun startScan(targetAddress: String?) {

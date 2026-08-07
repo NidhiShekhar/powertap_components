@@ -19,7 +19,7 @@
                 android:height="8dp"
                 android:gravity="center">
                 <shape android:shape="oval">
-                    <solid android:color="#33888888" />
+                    <solid android:color="@color/tab_dot_unselected" />
                 </shape>
             </item>
         </layer-list>

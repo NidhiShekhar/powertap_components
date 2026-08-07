@@ -5,6 +5,7 @@
     android:layout_height="match_parent"
     android:orientation="vertical"
     android:padding="16dp"
+    android:background="?attr/colorSurface"
     android:fitsSystemWindows="true">
 
     <TextView
@@ -13,12 +14,13 @@
         android:text="LCD Demo"
         android:textSize="28sp"
         android:textStyle="bold"
+        android:textColor="?attr/colorOnSurface"
         android:paddingBottom="12dp"/>
 
     <View
         android:layout_width="match_parent"
         android:layout_height="2dp"
-        android:background="#666666"
+        android:background="?attr/colorOutlineVariant"
         android:layout_marginTop="8dp"
         android:layout_marginBottom="12dp"/>
 
@@ -80,7 +82,7 @@
     <View
         android:layout_width="match_parent"
         android:layout_height="2dp"
-        android:background="#666666"
+        android:background="?attr/colorOutlineVariant"
         android:layout_marginTop="12dp"
         android:layout_marginBottom="12dp"/>
 

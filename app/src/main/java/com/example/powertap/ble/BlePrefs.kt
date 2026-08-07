@@ -1,6 +1,7 @@
 package com.drivool.iot.powertap.ble
 
 import android.content.Context
+import com.drivool.iot.powertap.DeviceIdentity
 
 object BlePrefs {
     private const val PREFS = "ble_prefs"
@@ -9,13 +10,24 @@ object BlePrefs {
     private const val KEY_KNOWN_DEVICES = "known_devices"
 
     fun saveLastDevice(context: Context, address: String, name: String?) {
+        val ble = DeviceIdentity.toBleAddress(address)
+            ?: DeviceIdentity.bleFromDeviceId(address)
+            ?: address
+        val displayName = DeviceIdentity.preferredName(name, ble)
+
         val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val known = p.getStringSet(KEY_KNOWN_DEVICES, emptySet())?.toMutableSet() ?: mutableSetOf()
-        val entry = if (name != null) "$name|$address" else address
-        known.add(entry)
-        
+
+        // Drop older aliases for the same physical PowerTap (unknown/id/ble variants).
+        known.removeAll { entry ->
+            val storedAddress = entry.substringAfter('|', entry)
+            DeviceIdentity.sameDevice(storedAddress, ble) ||
+                DeviceIdentity.sameDevice(entry.substringBefore('|', ""), ble)
+        }
+        known.add("$displayName|$ble")
+
         p.edit()
-            .putString(KEY_LAST_ADDRESS, address)
+            .putString(KEY_LAST_ADDRESS, ble)
             .putStringSet(KEY_KNOWN_DEVICES, known)
             .apply()
     }
@@ -32,16 +44,54 @@ object BlePrefs {
             .apply()
     }
 
+    /**
+     * Known devices deduped to one row per physical PowerTap.
+     * Pair = (displayName, bleAddress).
+     */
     fun getKnownDevices(context: Context): List<Pair<String?, String>> {
-        val set = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getStringSet(KEY_KNOWN_DEVICES, emptySet()) ?: emptySet()
-        return set.map {
-            if (it.contains("|")) {
-                val parts = it.split("|")
+        val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val set = p.getStringSet(KEY_KNOWN_DEVICES, emptySet()) ?: emptySet()
+
+        data class Acc(var name: String?, var address: String, var nameScore: Int)
+
+        val byFamily = linkedMapOf<String, Acc>()
+        for (entry in set) {
+            val (rawName, rawAddress) = if (entry.contains("|")) {
+                val parts = entry.split("|", limit = 2)
                 parts[0] to parts[1]
             } else {
-                null to it
+                null to entry
+            }
+            val ble = DeviceIdentity.toBleAddress(rawAddress)
+                ?: DeviceIdentity.bleFromDeviceId(rawAddress)
+                ?: continue
+            val family = DeviceIdentity.familyKey(ble) ?: continue
+            val score = DeviceIdentity.scoreName(rawName)
+            val existing = byFamily[family]
+            if (existing == null) {
+                byFamily[family] = Acc(
+                    name = DeviceIdentity.preferredName(rawName, ble),
+                    address = ble,
+                    nameScore = score,
+                )
+            } else {
+                if (score > existing.nameScore) {
+                    existing.name = DeviceIdentity.preferredName(rawName, ble)
+                    existing.nameScore = score
+                }
+                // Prefer colon BLE form (always true after toBleAddress)
+                existing.address = ble
             }
         }
+
+        val deduped = byFamily.values.map { it.name to it.address }
+
+        // Rewrite prefs so stale aliases don't keep coming back.
+        val rewritten = deduped.map { (name, addr) -> "${name ?: "PowerTap"}|$addr" }.toSet()
+        if (rewritten != set) {
+            p.edit().putStringSet(KEY_KNOWN_DEVICES, rewritten).apply()
+        }
+
+        return deduped
     }
 }

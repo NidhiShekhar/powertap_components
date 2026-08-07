@@ -1,7 +1,6 @@
 package com.drivool.iot.powertap
 
 import android.content.Intent
-import android.graphics.Color
 import android.os.Bundle
 import android.util.Log
 import android.view.Gravity
@@ -11,6 +10,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.credentials.ClearCredentialStateRequest
 import androidx.credentials.CredentialManager
 import androidx.credentials.GetCredentialRequest
@@ -75,12 +75,12 @@ class AuthActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             setPadding(64, 0, 64, 0)
-            setBackgroundColor(Color.WHITE)
+            setBackgroundColor(ThemeColors.surface(this@AuthActivity))
 
             addView(TextView(this@AuthActivity).apply {
                 text = "Welcome to PowerTap"
                 textSize = 24f
-                setTextColor(Color.BLACK)
+                setTextColor(ThemeColors.onSurface(this@AuthActivity))
                 gravity = Gravity.CENTER
                 setPadding(0, 0, 0, 16)
             })
@@ -88,15 +88,15 @@ class AuthActivity : AppCompatActivity() {
             addView(TextView(this@AuthActivity).apply {
                 text = "Please sign in to continue"
                 textSize = 14f
-                setTextColor(Color.GRAY)
+                setTextColor(ThemeColors.onSurfaceVariant(this@AuthActivity))
                 gravity = Gravity.CENTER
                 setPadding(0, 0, 0, 64)
             })
 
             addView(Button(this@AuthActivity).apply {
                 text = "Sign in with Google"
-                setBackgroundColor(androidx.core.content.ContextCompat.getColor(this@AuthActivity, R.color.google_blue))
-                setTextColor(Color.WHITE)
+                setBackgroundColor(ContextCompat.getColor(this@AuthActivity, R.color.google_blue))
+                setTextColor(ContextCompat.getColor(this@AuthActivity, R.color.white))
                 setOnClickListener {
                     Log.d(TAG, "Google Sign In button clicked")
                     signInWithGoogle()

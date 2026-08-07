@@ -1,9 +1,9 @@
 package com.drivool.iot.powertap
 
 import android.Manifest
-import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -14,6 +14,7 @@ import android.widget.Button
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.lifecycle.lifecycleScope
@@ -26,14 +27,27 @@ class DeviceScanActivity : AppCompatActivity() {
 
     private lateinit var deviceList: RecyclerView
     private lateinit var btnScan: Button
+    private lateinit var btnScanQr: Button
     private lateinit var scanProgress: ProgressBar
     private var devices: List<DiscoveredDevice> = emptyList()
+
+    private val qrScanLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        if (result.resultCode == RESULT_OK) {
+            val name = result.data?.getStringExtra(QrScanActivity.EXTRA_DISPLAY_NAME)
+                ?: "PowerTap"
+            Toast.makeText(this, "Connecting to $name", Toast.LENGTH_SHORT).show()
+            finish()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_device_scan)
 
         btnScan = findViewById(R.id.btnScan)
+        btnScanQr = findViewById(R.id.btnScanQr)
         deviceList = findViewById(R.id.deviceList)
         scanProgress = findViewById(R.id.scanProgress)
 
@@ -98,7 +112,25 @@ class DeviceScanActivity : AppCompatActivity() {
         btnScan.setOnClickListener {
             startDiscovery()
         }
-        
+
+        btnScanQr.setOnClickListener {
+            if (!checkPermissions()) {
+                Toast.makeText(this, "Bluetooth permission is required to connect", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+            val adapter = bluetoothManager.adapter
+            if (adapter == null || !adapter.isEnabled) {
+                Toast.makeText(this, "Please turn on Bluetooth to connect", Toast.LENGTH_LONG).show()
+                return@setOnClickListener
+            }
+            GatewayManager.bleTransport.stopScan()
+            scanProgress.visibility = View.GONE
+            btnScan.text = "Start Scanning"
+            btnScan.isEnabled = true
+            qrScanLauncher.launch(Intent(this, QrScanActivity::class.java))
+        }
+
         // Auto-start scan on open
         startDiscovery()
 
@@ -143,8 +175,19 @@ class DeviceScanActivity : AppCompatActivity() {
 
         override fun onBindViewHolder(holder: ViewHolder, position: Int) {
             val item = items[position]
-            holder.name.text = item.displayName ?: "Unknown Device"
-            holder.address.text = item.address
+            val deviceId = DeviceIdentity.deviceIdFromBle(item.address)
+            val title = when {
+                !item.name.isNullOrBlank() && item.name.startsWith("PowerTap_", ignoreCase = true) -> item.name
+                deviceId != null -> "PowerTap_$deviceId"
+                !item.name.isNullOrBlank() -> item.name
+                else -> "PowerTap"
+            }
+            holder.name.text = title
+            holder.address.text = if (deviceId != null) {
+                "${item.address}  ·  ID $deviceId"
+            } else {
+                item.address
+            }
             holder.rssi.text = "${item.rssi} dBm"
             holder.itemView.setOnClickListener { onClick(item) }
         }
