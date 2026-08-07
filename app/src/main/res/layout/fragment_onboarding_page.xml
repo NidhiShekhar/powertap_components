@@ -20,7 +20,7 @@
         android:layout_marginTop="32dp"
         android:gravity="center"
         android:text="Welcome to PowerTap"
-        android:textColor="@color/black"
+        android:textColor="?attr/colorOnSurface"
         android:textSize="24sp"
         android:textStyle="bold" />
 
@@ -31,7 +31,7 @@
         android:layout_marginTop="16dp"
         android:gravity="center"
         android:text="The smartest way to manage your EV charging. Connect, monitor, and control with ease."
-        android:textColor="#666666"
+        android:textColor="?attr/colorOnSurfaceVariant"
         android:textSize="16sp" />
 
 </LinearLayout>
