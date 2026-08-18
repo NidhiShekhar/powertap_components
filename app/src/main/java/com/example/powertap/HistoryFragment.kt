@@ -1,9 +1,11 @@
 package com.drivool.iot.powertap
 
+import android.content.Intent
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.ImageButton
 import android.widget.TextView
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
@@ -78,6 +80,7 @@ class HistoryFragment : Fragment() {
             private val txtTimeEnd: TextView = view.findViewById(R.id.txtTimeEnd)
             private val txtMeterStart: TextView = view.findViewById(R.id.txtMeterStart)
             private val txtMeterEnd: TextView = view.findViewById(R.id.txtMeterEnd)
+            private val btnChart: ImageButton = view.findViewById(R.id.btnChart)
 
             private val dateFormat = SimpleDateFormat("dd MMM yyyy", Locale.getDefault())
             private val timeFormat = SimpleDateFormat("hh:mm a", Locale.getDefault())
@@ -107,6 +110,13 @@ class HistoryFragment : Fragment() {
 
                 txtMeterStart.text = "Start: ${session.meterStart} Wh"
                 txtMeterEnd.text = "End: ${session.meterStop ?: "---"} Wh"
+
+                btnChart.setOnClickListener {
+                    val intent = Intent(it.context, ChartActivity::class.java).apply {
+                        putExtra("TRANSACTION_ID", session.transactionId)
+                    }
+                    it.context.startActivity(intent)
+                }
             }
         }
     }

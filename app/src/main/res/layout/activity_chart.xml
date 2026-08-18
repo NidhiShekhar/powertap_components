@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <TextView
+        android:id="@+id/txtTitle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Charging Session Chart"
+        android:textSize="20sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="16dp"/>
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <com.github.mikephil.charting.charts.LineChart
+            android:id="@+id/lineChart"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <LinearLayout
+            android:id="@+id/legendContainer"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:layout_gravity="top|end"
+            android:layout_margin="8dp"
+            android:background="#80FFFFFF"
+            android:padding="4dp">
+
+            <CheckBox
+                android:id="@+id/cbVoltage"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="V"
+                android:checked="true"
+                android:textSize="12sp"
+                android:buttonTint="#FF0000"/>
+
+            <CheckBox
+                android:id="@+id/cbCurrent"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="A"
+                android:checked="true"
+                android:textSize="12sp"
+                android:buttonTint="#00FF00"/>
+
+            <CheckBox
+                android:id="@+id/cbEnergy"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Wh"
+                android:checked="true"
+                android:textSize="12sp"
+                android:buttonTint="#0000FF"/>
+        </LinearLayout>
+    </FrameLayout>
+
+</LinearLayout>

@@ -303,6 +303,7 @@ object GatewayManager {
 
     private var pendingMode: String? = null
     private var pendingTid: String? = null
+    private val sessionMeterData = mutableMapOf<String, MutableList<MeterData>>()
 
     private fun handleOcppPacket(payload: String) {
         try {
@@ -331,12 +332,20 @@ object GatewayManager {
                             status = "Active"
                         )
                     )
+                    sessionMeterData[tid] = mutableListOf()
                     _bridgeDetectedState.value = 3 // STATE_CHARGING
                 }
                 "StopTransaction" -> {
                     val tid = data.getString("transactionId")
                     val mStop = data.getDouble("meterStop").toFloat()
                     TransactionRepository.updateSession(tid, mStop, System.currentTimeMillis(), "Completed")
+                    
+                    // Save collected meter data
+                    sessionMeterData[tid]?.let { list ->
+                        TransactionRepository.saveMeterDataList(tid, list)
+                    }
+                    sessionMeterData.remove(tid)
+                    
                     _bridgeDetectedState.value = 0 // STATE_AVAILABLE
                 }
                 "MeterValues" -> {
@@ -345,6 +354,14 @@ object GatewayManager {
                         val mv = data.optJSONObject("meterValue")
                         val mCurrent = mv?.optDouble("e")?.toFloat() ?: 0f
                         TransactionRepository.addMeterValue(tid, mCurrent)
+                        
+                        // Collect data for chart
+                        parseMeterData(payload)?.let { meterData ->
+                            if (!sessionMeterData.containsKey(tid)) {
+                                sessionMeterData[tid] = mutableListOf()
+                            }
+                            sessionMeterData[tid]?.add(meterData)
+                        }
                     }
                 }
             }

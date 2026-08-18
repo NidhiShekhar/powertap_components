@@ -429,7 +429,7 @@ class HomeFragment : Fragment() {
                 
                 if (position < knownDevices.size) {
                     text1.text = "PowerTap ${position + 1}"
-                    text2.text = knownDevices[position].second
+                    text2.text = knownDevices[position].second.replace(":", "")
                     text2.visibility = View.VISIBLE
                 } else {
                     text1.text = "Add new device"
@@ -446,7 +446,7 @@ class HomeFragment : Fragment() {
         deviceSelector?.setOnItemClickListener { _, view, position, _ ->
             if (position == knownDevices.size) {
                 updateDeviceSelectorText(MqttPrefs.loadDeviceId(ctx))
-                showAddDeviceMenu(view ?: deviceSelector!!)
+                showAddDeviceMenu(btnAddDevice ?: view ?: deviceSelector!!)
                 return@setOnItemClickListener
             }
             if (position !in knownDevices.indices) return@setOnItemClickListener
@@ -663,8 +663,6 @@ class HomeFragment : Fragment() {
             val bd = btnDisconnect
 
             if (isOnline) {
-                val statusText = if (isGatewayOnline) "Connected" else "Online"
-                subtitle.text = "ID: $deviceId | $statusText"
                 bd?.visibility = if (isGatewayOnline) View.VISIBLE else View.GONE
                 
                 // Don't update SB if user is dragging
@@ -706,7 +704,6 @@ class HomeFragment : Fragment() {
                     sb.activate(false)
                     sb.setText("Device is Offline")
                 }
-                subtitle.text = "ID: $deviceId | Diff: ${diffSeconds}s | Offline"
                 bd?.visibility = View.GONE
                 
                 // If offline, maybe we should also clear commandStartTime?
@@ -739,7 +736,6 @@ class HomeFragment : Fragment() {
                         activity?.runOnUiThread {
                             sliderButton?.activate(false)
                             sliderButton?.setText("Device Not Found")
-                            txtSubtitle?.text = "ID: $deviceId | Status: Not Found"
                         }
                         return
                     }

@@ -52,6 +52,7 @@ class MainActivity : AppCompatActivity() {
                 R.id.nav_lcd -> replaceFragment(LCDFragment(), "LCD Demo")
                 R.id.nav_config -> replaceFragment(ConfigFragment(), "Config Panel")
                 R.id.nav_slider -> replaceFragment(SliderFragment(), "Slider Button")
+                R.id.nav_energy -> replaceFragment(EnergyRateFragment(), "Energy Rate")
                 R.id.nav_history -> replaceFragment(HistoryFragment(), "Charging History")
                 R.id.nav_ble_test -> startActivity(android.content.Intent(this, BleTestActivity::class.java))
                 R.id.nav_mqtt_gateway -> startActivity(android.content.Intent(this, MqttActivity::class.java))

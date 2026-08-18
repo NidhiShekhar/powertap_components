@@ -2,15 +2,18 @@ package com.drivool.iot.powertap
 
 import android.content.Context
 import com.drivool.iot.powertap.contract.ChargingSession
+import com.drivool.iot.powertap.contract.MeterData
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 
 object TransactionRepository {
     private const val PREFS_NAME = "charging_history"
     private const val KEY_SESSIONS = "sessions"
+    private const val METER_DATA_DIR = "meter_data"
 
     private val _sessions = MutableStateFlow<List<ChargingSession>>(emptyList())
     val sessions: StateFlow<List<ChargingSession>> = _sessions.asStateFlow()
@@ -70,6 +73,51 @@ object TransactionRepository {
             val updated = current[index].copy(meterStop = currentMeter)
             current[index] = updated
             _sessions.value = current
+        }
+    }
+
+    fun saveMeterDataList(transactionId: String, dataList: List<MeterData>) {
+        val context = appContext ?: return
+        val dir = File(context.filesDir, METER_DATA_DIR)
+        if (!dir.exists()) dir.mkdirs()
+        
+        val file = File(dir, "$transactionId.json")
+        val arr = JSONArray()
+        dataList.forEach {
+            val obj = JSONObject()
+            obj.put("v", it.voltage.toDouble())
+            obj.put("c", it.current.toDouble())
+            obj.put("p", it.power.toDouble())
+            obj.put("e", it.energy.toDouble())
+            obj.put("f", it.frequency.toDouble())
+            obj.put("t", it.timestamp)
+            arr.put(obj)
+        }
+        file.writeText(arr.toString())
+    }
+
+    fun getMeterDataList(transactionId: String): List<MeterData> {
+        val context = appContext ?: return emptyList()
+        val file = File(context.filesDir, "$METER_DATA_DIR/$transactionId.json")
+        if (!file.exists()) return emptyList()
+        
+        return try {
+            val arr = JSONArray(file.readText())
+            val list = mutableListOf<MeterData>()
+            for (i in 0 until arr.length()) {
+                val obj = arr.getJSONObject(i)
+                list.add(MeterData(
+                    voltage = obj.getDouble("v").toFloat(),
+                    current = obj.getDouble("c").toFloat(),
+                    power = obj.getDouble("p").toFloat(),
+                    energy = obj.getDouble("e").toFloat(),
+                    frequency = obj.getDouble("f").toFloat(),
+                    timestamp = obj.getLong("t")
+                ))
+            }
+            list
+        } catch (e: Exception) {
+            emptyList()
         }
     }
 
