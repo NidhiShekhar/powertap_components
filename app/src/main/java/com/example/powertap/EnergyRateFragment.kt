@@ -2,6 +2,7 @@ package com.drivool.iot.powertap
 
 import android.graphics.Typeface
 import android.os.Bundle
+import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -12,10 +13,18 @@ import android.widget.TextView
 import androidx.core.content.ContextCompat
 import androidx.core.view.setPadding
 import androidx.fragment.app.Fragment
+import com.google.firebase.database.FirebaseDatabase
 import com.google.android.material.card.MaterialCardView
 
 class EnergyRateFragment : Fragment() {
-    private val tariffRates = EnergyRateModel.defaultTariffRates()
+    // Temporary single-tenant association key.
+    // TODO: Replace with mapped association key from resident-manager onboarding/auth flow.
+    private val defaultAssociationKey = "ssowa2013gmailcom"
+
+    private var tariffRates: List<TariffGroup> = emptyList()
+    private var titleView: TextView? = null
+    private var subtitleView: TextView? = null
+    private var tariffContainer: LinearLayout? = null
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -23,14 +32,73 @@ class EnergyRateFragment : Fragment() {
         savedInstanceState: Bundle?
     ): View {
         val rootView = inflater.inflate(R.layout.fragment_energy_rate, container, false)
-        val tariffContainer = rootView.findViewById<LinearLayout>(R.id.tariffContainer)
-        renderTariffCards(tariffContainer)
+        titleView = rootView.findViewById(R.id.txtEnergyRateTitle)
+        subtitleView = rootView.findViewById(R.id.txtEnergyRateSubtitle)
+        tariffContainer = rootView.findViewById(R.id.tariffContainer)
+
+        subtitleView?.text = "Loading tariff rates from Firebase..."
+        renderTariffCards(EnergyRateModel.defaultTariffRates(), "Fallback")
+        loadTariffsFromFirebase()
         return rootView
     }
 
-    private fun renderTariffCards(container: LinearLayout) {
+    override fun onDestroyView() {
+        super.onDestroyView()
+        titleView = null
+        subtitleView = null
+        tariffContainer = null
+    }
+
+    private fun loadTariffsFromFirebase() {
+        // Single-tenant mode: all users read tariffs from SSOWA association.
+        // This keeps behavior stable until user->association mapping is available.
+        tryFetchTariffsForKeys(listOf(defaultAssociationKey), 0)
+    }
+
+    private fun tryFetchTariffsForKeys(keys: List<String>, index: Int) {
+        if (index >= keys.size) {
+            subtitleView?.text = "No CSO tariff found for this account. Showing fallback rates."
+            tariffRates = EnergyRateModel.defaultTariffRates()
+            renderTariffCards(tariffRates, "Fallback")
+            return
+        }
+
+        val associationKey = keys[index]
+        val detailsRef = FirebaseDatabase.getInstance()
+            .getReference("CSOs/$associationKey/activeTariff/details")
+
+        detailsRef.get()
+            .addOnSuccessListener { snapshot ->
+                if (!snapshot.exists()) {
+                    tryFetchTariffsForKeys(keys, index + 1)
+                    return@addOnSuccessListener
+                }
+
+                val detailsMap = snapshot.value as? Map<String, Any?> ?: emptyMap()
+                val parsed = EnergyRateModel.parseFromFirebase(detailsMap)
+                if (parsed == null || parsed.rates.isEmpty()) {
+                    tryFetchTariffsForKeys(keys, index + 1)
+                    return@addOnSuccessListener
+                }
+
+                tariffRates = parsed.rates
+                subtitleView?.text = "Source: ${parsed.source} | Association: $associationKey"
+                renderTariffCards(tariffRates, parsed.source)
+            }
+            .addOnFailureListener { error ->
+                Log.e("EnergyRateFragment", "Tariff fetch failed for key $associationKey", error)
+                tryFetchTariffsForKeys(keys, index + 1)
+            }
+    }
+
+    private fun renderTariffCards(rates: List<TariffGroup>, source: String) {
+        val container = tariffContainer ?: return
         container.removeAllViews()
-        tariffRates.forEach { rateGroup ->
+        titleView?.text = "Electricity Tariff"
+        if (subtitleView?.text.isNullOrBlank()) {
+            subtitleView?.text = "Source: $source"
+        }
+        rates.forEach { rateGroup ->
             container.addView(createTariffCard(rateGroup))
         }
     }
@@ -123,4 +191,5 @@ class EnergyRateFragment : Fragment() {
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
 }

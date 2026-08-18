@@ -5,6 +5,7 @@
             android:id="@+id/nav_home"
             android:icon="@android:drawable/ic_menu_today"
             android:title="Home" />
+        <!--
         <item
             android:id="@+id/nav_lcd"
             android:icon="@android:drawable/ic_menu_view"
@@ -17,6 +18,7 @@
             android:id="@+id/nav_slider"
             android:icon="@android:drawable/ic_menu_slideshow"
             android:title="Slider Button" />
+        -->
         <item
             android:id="@+id/nav_energy"
             android:icon="@android:drawable/ic_menu_compass"
@@ -25,6 +27,7 @@
             android:id="@+id/nav_history"
             android:icon="@android:drawable/ic_menu_recent_history"
             android:title="Charging History" />
+        <!--
         <item
             android:id="@+id/nav_ble_test"
             android:icon="@android:drawable/ic_menu_preferences"
@@ -33,14 +36,17 @@
             android:id="@+id/nav_mqtt_gateway"
             android:icon="@android:drawable/ic_dialog_info"
             android:title="MQTT Gateway" />
+        -->
         <item
             android:id="@+id/nav_power_data"
             android:icon="@android:drawable/ic_menu_sort_by_size"
             android:title="Live Power Data" />
+        <!--
         <item
             android:id="@+id/nav_logs"
             android:icon="@android:drawable/ic_menu_info_details"
             android:title="System Logs" />
+        -->
         <item
             android:id="@+id/nav_settings"
             android:icon="@android:drawable/ic_menu_manage"

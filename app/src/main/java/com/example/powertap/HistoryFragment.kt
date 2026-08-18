@@ -111,12 +111,14 @@ class HistoryFragment : Fragment() {
                 txtMeterStart.text = "Start: ${session.meterStart} Wh"
                 txtMeterEnd.text = "End: ${session.meterStop ?: "---"} Wh"
 
-                btnChart.setOnClickListener {
+                val openChart = View.OnClickListener {
                     val intent = Intent(it.context, ChartActivity::class.java).apply {
                         putExtra("TRANSACTION_ID", session.transactionId)
                     }
                     it.context.startActivity(intent)
                 }
+                itemView.setOnClickListener(openChart)
+                btnChart.setOnClickListener(openChart)
             }
         }
     }

@@ -4,6 +4,9 @@
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:layout_margin="8dp"
+    android:clickable="true"
+    android:focusable="true"
+    android:foreground="?attr/selectableItemBackground"
     app:cardCornerRadius="12dp"
     app:cardElevation="4dp"
     app:cardBackgroundColor="?attr/colorSurfaceContainer">
@@ -14,24 +17,42 @@
         android:orientation="vertical"
         android:padding="16dp">
 
-        <RelativeLayout
+        <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="wrap_content">
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
 
             <TextView
                 android:id="@+id/txtDate"
-                android:layout_width="wrap_content"
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:ellipsize="end"
+                android:maxLines="1"
                 android:text="24 May 2024"
                 android:textColor="?attr/colorPrimary"
                 android:textSize="16sp"
                 android:textStyle="bold" />
 
+            <ImageButton
+                android:id="@+id/btnChart"
+                android:layout_width="28dp"
+                android:layout_height="28dp"
+                android:layout_marginEnd="8dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Show Charts"
+                android:minWidth="0dp"
+                android:minHeight="0dp"
+                android:padding="4dp"
+                android:scaleType="centerInside"
+                android:src="@android:drawable/ic_menu_sort_by_size"
+                app:tint="?attr/colorPrimary" />
+
             <TextView
                 android:id="@+id/txtStatus"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_alignParentEnd="true"
                 android:background="@drawable/bg_status_completed"
                 android:paddingHorizontal="8dp"
                 android:paddingVertical="2dp"
@@ -39,19 +60,7 @@
                 android:textColor="@android:color/white"
                 android:textSize="12sp"
                 android:textStyle="bold" />
-
-            <ImageButton
-                android:id="@+id/btnChart"
-                android:layout_width="32dp"
-                android:layout_height="32dp"
-                android:layout_below="@id/txtStatus"
-                android:layout_alignParentEnd="true"
-                android:layout_marginTop="8dp"
-                android:background="?attr/selectableItemBackgroundBorderless"
-                android:src="@android:drawable/ic_menu_sort_by_size"
-                android:contentDescription="Show Charts"
-                app:tint="?attr/colorPrimary" />
-        </RelativeLayout>
+        </LinearLayout>
 
         <TextView
             android:id="@+id/txtTid"
