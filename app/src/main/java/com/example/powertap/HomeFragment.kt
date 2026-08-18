@@ -418,9 +418,26 @@ class HomeFragment : Fragment() {
             emptyState?.visibility = View.GONE
         }
 
-        val deviceStrings = knownDevices.map { "${it.first ?: "Unknown"} (${it.second})" } +
-            "Scan for nearby devices"
-        val adapter = ArrayAdapter(ctx, android.R.layout.simple_dropdown_item_1line, deviceStrings)
+        val adapter = object : ArrayAdapter<String>(ctx, android.R.layout.simple_list_item_2, android.R.id.text1, mutableListOf<String>().apply {
+            addAll(knownDevices.mapIndexed { i, _ -> "PowerTap ${i + 1}" })
+            add("Add new device")
+        }) {
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+                val view = super.getView(position, convertView, parent)
+                val text1 = view.findViewById<TextView>(android.R.id.text1)
+                val text2 = view.findViewById<TextView>(android.R.id.text2)
+                
+                if (position < knownDevices.size) {
+                    text1.text = "PowerTap ${position + 1}"
+                    text2.text = knownDevices[position].second
+                    text2.visibility = View.VISIBLE
+                } else {
+                    text1.text = "Add new device"
+                    text2.visibility = View.GONE
+                }
+                return view
+            }
+        }
         deviceSelector?.setAdapter(adapter)
         
         val currentId = MqttPrefs.loadDeviceId(ctx)
@@ -561,7 +578,10 @@ class HomeFragment : Fragment() {
 
     private fun updateDeviceSelectorText(id: String) {
         val ctx = context ?: return
-        if (id.isEmpty()) return
+        if (id.isEmpty()) {
+            deviceSelector?.setText("Select PowerTap", false)
+            return
+        }
         val known = BlePrefs.getKnownDevices(ctx)
         val index = known.indexOfFirst {
             DeviceIdentity.sameDevice(it.second, id) ||
@@ -569,7 +589,7 @@ class HomeFragment : Fragment() {
                 DeviceIdentity.deviceIdFromBle(it.second) == DeviceIdentity.cleanHex(id)
         }
         val text = if (index != -1) {
-            "${known[index].first ?: "PowerTap"} (${known[index].second})"
+            "PowerTap ${index + 1}"
         } else {
             id
         }

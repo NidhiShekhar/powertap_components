@@ -32,13 +32,12 @@ class AuthActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
-        // Always show the welcome UI first to ensure "Welcome to PowerTap" is seen
-        setContentView(buildUi())
-
         val onboardingDone = getSharedPreferences("prefs", MODE_PRIVATE).getBoolean("onboarding_done", false)
         Log.d(TAG, "onCreate: Checking current user, onboardingDone=$onboardingDone")
 
         if (auth.currentUser != null) {
+            // User already logged in - show splash/welcome without buttons
+            setContentView(buildSplashUi())
             Log.d(TAG, "onCreate: User already logged in, transitioning after splash delay")
             lifecycleScope.launch {
                 delay(1500) // Show welcome/splash for 1.5s
@@ -52,6 +51,8 @@ class AuthActivity : AppCompatActivity() {
             return
         }
 
+        // Not logged in - show the sign-in UI
+        setContentView(buildLoginUi())
         handleEmailLink(intent)
     }
 
@@ -84,7 +85,37 @@ class AuthActivity : AppCompatActivity() {
         }
     }
 
-    private fun buildUi(): View {
+    private fun buildSplashUi(): View {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setBackgroundColor(ThemeColors.surface(this@AuthActivity))
+
+            addView(TextView(this@AuthActivity).apply {
+                text = "⚡"
+                textSize = 64f
+                gravity = Gravity.CENTER
+            })
+
+            addView(TextView(this@AuthActivity).apply {
+                text = "Welcome to PowerTap"
+                textSize = 32f
+                setLineSpacing(0f, 1.2f)
+                setTextColor(ThemeColors.onSurface(this@AuthActivity))
+                gravity = Gravity.CENTER
+                setPadding(0, 16, 0, 0)
+            })
+
+            addView(TextView(this@AuthActivity).apply {
+                text = "The smartest way to charge"
+                textSize = 14f
+                setTextColor(ThemeColors.onSurfaceVariant(this@AuthActivity))
+                gravity = Gravity.CENTER
+            })
+        }
+    }
+
+    private fun buildLoginUi(): View {
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
