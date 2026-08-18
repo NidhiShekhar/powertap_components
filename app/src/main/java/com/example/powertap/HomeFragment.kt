@@ -438,6 +438,13 @@ class HomeFragment : Fragment() {
             // Check if bonded with OS
             val btManager = ctx.getSystemService(android.content.Context.BLUETOOTH_SERVICE) as android.bluetooth.BluetoothManager
             val btAdapter = btManager.adapter
+
+            if (btAdapter == null || !btAdapter.isEnabled) {
+                Toast.makeText(ctx, "Please enable Bluetooth to connect", Toast.LENGTH_SHORT).show()
+                updateDeviceSelectorText(MqttPrefs.loadDeviceId(ctx))
+                return@setOnItemClickListener
+            }
+
             val isBonded = try {
                 if (androidx.core.app.ActivityCompat.checkSelfPermission(ctx, android.Manifest.permission.BLUETOOTH_CONNECT) == android.content.pm.PackageManager.PERMISSION_GRANTED || android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.S) {
                     btAdapter?.bondedDevices?.any { it.address == selected.second } == true

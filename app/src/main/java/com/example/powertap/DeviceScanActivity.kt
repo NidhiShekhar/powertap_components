@@ -55,6 +55,11 @@ class DeviceScanActivity : AppCompatActivity() {
         val adapter = DeviceAdapter { device ->
             val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
             val btAdapter = bluetoothManager.adapter
+
+            if (btAdapter == null || !btAdapter.isEnabled) {
+                Toast.makeText(this, "Please enable Bluetooth to connect", Toast.LENGTH_SHORT).show()
+                return@DeviceAdapter
+            }
             
             val isBonded = try {
                 if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {

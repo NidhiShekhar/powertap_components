@@ -107,14 +107,24 @@ class BleTestActivity : AppCompatActivity() {
         knownDevicesAdapter = ArrayAdapter(this, android.R.layout.simple_list_item_1)
         knownListView.adapter = knownDevicesAdapter
         knownListView.setOnItemClickListener { _, _, position, _ ->
-            val known = BlePrefs.getKnownDevices(this)
-            known.getOrNull(position)?.let { transport.connect(it.second) }
+            val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as android.bluetooth.BluetoothManager
+            if (bluetoothManager.adapter?.isEnabled == true) {
+                val known = BlePrefs.getKnownDevices(this)
+                known.getOrNull(position)?.let { transport.connect(it.second) }
+            } else {
+                Toast.makeText(this, "Please turn on Bluetooth", Toast.LENGTH_SHORT).show()
+            }
         }
 
         deviceListAdapter = ArrayAdapter(this, android.R.layout.simple_list_item_1)
         deviceListView.adapter = deviceListAdapter
         deviceListView.setOnItemClickListener { _, _, position, _ ->
-            discoveredDevicesList.getOrNull(position)?.let { transport.connect(it.address) }
+            val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as android.bluetooth.BluetoothManager
+            if (bluetoothManager.adapter?.isEnabled == true) {
+                discoveredDevicesList.getOrNull(position)?.let { transport.connect(it.address) }
+            } else {
+                Toast.makeText(this, "Please turn on Bluetooth", Toast.LENGTH_SHORT).show()
+            }
         }
 
         appLogAdapter = createLogAdapter()

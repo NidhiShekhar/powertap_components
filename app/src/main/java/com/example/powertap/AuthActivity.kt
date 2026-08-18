@@ -21,6 +21,7 @@ import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import com.google.firebase.auth.ActionCodeSettings
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.GoogleAuthProvider
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class AuthActivity : AppCompatActivity() {
@@ -30,15 +31,28 @@ class AuthActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        Log.d(TAG, "onCreate: Checking current user")
+        
+        // Always show the welcome UI first to ensure "Welcome to PowerTap" is seen
+        setContentView(buildUi())
+
+        val onboardingDone = getSharedPreferences("prefs", MODE_PRIVATE).getBoolean("onboarding_done", false)
+        Log.d(TAG, "onCreate: Checking current user, onboardingDone=$onboardingDone")
+
         if (auth.currentUser != null) {
-            Log.d(TAG, "onCreate: User already logged in, starting MainActivity")
-            startMainActivity()
+            Log.d(TAG, "onCreate: User already logged in, transitioning after splash delay")
+            lifecycleScope.launch {
+                delay(1500) // Show welcome/splash for 1.5s
+                if (onboardingDone) {
+                    startMainActivity()
+                } else {
+                    startActivity(Intent(this@AuthActivity, OnboardingActivity::class.java))
+                    finish()
+                }
+            }
             return
         }
 
         handleEmailLink(intent)
-        setContentView(buildUi())
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -132,7 +146,7 @@ class AuthActivity : AppCompatActivity() {
         val googleIdOption = GetGoogleIdOption.Builder()
             .setFilterByAuthorizedAccounts(false)
             .setServerClientId(webClientId)
-            .setAutoSelectEnabled(false)
+            .setAutoSelectEnabled(true) // Automatically detect and log in if possible
             .setNonce(java.util.UUID.randomUUID().toString())
             .build()
 
