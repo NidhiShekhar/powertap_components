@@ -21,13 +21,13 @@ data class DiscoveredDevice(
     val displayName: String get() = name ?: "(unknown)"
 }
 
-/** Data extracted from MeterValues packets. */
+/** Data extracted from MeterValues packets. Scaled from firmware milli-units. */
 data class MeterData(
-    val voltage: Float,     // v
-    val current: Float,     // c
-    val power: Float,       // p
-    val energy: Float,      // e
-    val frequency: Float,   // f
+    val voltage: Float,     // V  (raw / 1000)
+    val current: Float,     // A  (raw / 1000)
+    val power: Float,       // W  (raw / 1000) — display as kW at 1000+
+    val energy: Float,      // Wh (raw / 1000) — display as kWh at 1000+
+    val frequency: Float,   // Hz
     val timestamp: Long = System.currentTimeMillis()
 )
 

@@ -45,6 +45,24 @@ object GatewayManager {
     private val _bridgeDetectedState = MutableStateFlow<Int?>(null)
     val bridgeDetectedState: StateFlow<Int?> = _bridgeDetectedState.asStateFlow()
 
+    /**
+     * Last CallResult (type-3 ACK) from the charger.
+     * Firmware replies `[3,"<msgId>",{"status":"Accepted"}]` immediately on RemoteStart/Stop,
+     * then later sends `StartTransaction` / `StopTransaction` when the relay actually switches.
+     */
+    private val _commandAck = MutableStateFlow<CommandAck?>(null)
+    val commandAck: StateFlow<CommandAck?> = _commandAck.asStateFlow()
+
+    private val _chargingStartedAt = MutableStateFlow<Long?>(null)
+    val chargingStartedAt: StateFlow<Long?> = _chargingStartedAt.asStateFlow()
+
+    /** True when the user tapped Disconnect this process — skip auto-reconnect until they pick a device. */
+    var userRequestedDisconnect: Boolean = false
+        private set
+
+    private var lastCommandMsgId: String? = null
+    private var lastCommandAction: String? = null
+
     private var context: Context? = null
 
     private val _currentDeviceId = MutableStateFlow<String>("")
@@ -82,6 +100,8 @@ object GatewayManager {
             LogRepository.append("Gateway: BLE connect aborted — Bluetooth off")
             return false
         }
+
+        userRequestedDisconnect = false
 
         val resolvedId = deviceId?.takeIf { it.isNotBlank() }
             ?: DeviceIdentity.deviceIdFromBle(bleAddress)
@@ -126,6 +146,38 @@ object GatewayManager {
     fun connectFromQr(qr: PowerTapQr): Boolean =
         connectToBle(qr.bleAddress, qr.deviceId, qr.displayName, scanFirst = true)
 
+    fun markUserDisconnect() {
+        userRequestedDisconnect = true
+        _bleTransport?.disconnect()
+        LogRepository.append("Gateway: User disconnected BLE — auto-connect paused for this session")
+    }
+
+    /**
+     * Reconnect the last PowerTap on app open (or when Bluetooth turns back on).
+     * Skipped if the user explicitly disconnected this session.
+     */
+    fun tryAutoConnect(): Boolean {
+        val ctx = context ?: return false
+        if (userRequestedDisconnect) {
+            LogRepository.append("Gateway: Auto-connect skipped — user disconnected")
+            return false
+        }
+        if (!BlePrefs.isAutoConnectEnabled(ctx)) return false
+        val lastAddr = BlePrefs.getLastDeviceAddress(ctx) ?: return false
+        val state = _bleTransport?.connectionState?.value ?: return false
+        if (state == ConnectionState.Connected ||
+            state == ConnectionState.Connecting ||
+            state == ConnectionState.Scanning
+        ) {
+            return true
+        }
+        val known = BlePrefs.getKnownDevices(ctx).firstOrNull { (_, addr) ->
+            addr.equals(lastAddr, ignoreCase = true)
+        }
+        LogRepository.append("Gateway: Auto-connecting BLE to $lastAddr...")
+        return connectToBle(lastAddr, displayName = known?.first, scanFirst = true)
+    }
+
     fun init(context: Context) {
         this.context = context.applicationContext
         TransactionRepository.init(context.applicationContext)
@@ -133,13 +185,7 @@ object GatewayManager {
             _bleTransport = BleTransport(context.applicationContext, log = LogRepository::append)
             setupBridge()
 
-            // Auto-connect BLE if enabled and last device exists
-            if (BlePrefs.isAutoConnectEnabled(context)) {
-                BlePrefs.getLastDeviceAddress(context)?.let { lastAddr ->
-                    LogRepository.append("Gateway: Auto-connecting BLE to $lastAddr...")
-                    _bleTransport?.startScan(lastAddr)
-                }
-            }
+            tryAutoConnect()
             
             // Auto-connect MQTT if config exists
             val config = MqttPrefs.load(context)
@@ -165,10 +211,17 @@ object GatewayManager {
                 }
             }
 
-            // Watchdog to mark offline if no heartbeat for 45s
+            // Watchdog: MQTT-only path times out after 45s of silence.
+            // If GATT is still up, keep the device online so the slider doesn't grey out
+            // during relay switching / brief packet gaps.
             scope.launch {
                 while (true) {
                     kotlinx.coroutines.delay(5000)
+                    val bleConnected = _bleTransport?.connectionState?.value == ConnectionState.Connected
+                    if (bleConnected) {
+                        if (!_isDeviceOnline.value) _isDeviceOnline.value = true
+                        continue
+                    }
                     val now = System.currentTimeMillis()
                     if (_isDeviceOnline.value && now - lastHeartbeatTime > 45000) {
                         LogRepository.append("Gateway: Device ${_currentDeviceId.value} is OFFLINE (timeout 45s)")
@@ -293,6 +346,12 @@ object GatewayManager {
         }
 
         scope.launch {
+            bleTransport.outgoing.collect { payload ->
+                noteOutgoingCommand(payload)
+            }
+        }
+
+        scope.launch {
             _mqttTransport.incoming.collect { incoming ->
                 if (_isBridgeEnabled.value) {
                     LogRepository.append("Bridge: MQTT -> BLE: ${incoming.payload}")
@@ -316,7 +375,7 @@ object GatewayManager {
             
             val meterValue = when (messageType) {
                 "MeterValues" -> dataObj.optJSONObject("meterValue")
-                "Heartbeat" -> dataObj
+                "Heartbeat", "HeartBeat" -> dataObj
                 "StartTransaction" -> {
                     // Initialize with start energy
                     val e = dataObj.optDouble("meterStart", 0.0)
@@ -345,9 +404,60 @@ object GatewayManager {
     private var pendingTid: String? = null
     private val sessionMeterData = mutableMapOf<String, MutableList<MeterData>>()
 
+    private fun noteOutgoingCommand(payload: String) {
+        try {
+            val arr = JSONArray(payload.trim())
+            if (arr.length() < 3) return
+            val frameType = when (val raw = arr.opt(0)) {
+                is Number -> raw.toInt()
+                else -> arr.optString(0).toIntOrNull() ?: -1
+            }
+            if (frameType != 2 || arr.length() < 3) return
+            val action = arr.optString(2)
+            if (action == "RemoteStart" || action == "RemoteStop") {
+                lastCommandMsgId = arr.optString(1)
+                lastCommandAction = action
+                LogRepository.append("Gateway: Outgoing $action id=$lastCommandMsgId")
+                handleOcppPacket(payload)
+            }
+        } catch (_: Exception) { }
+    }
+
+    private fun handleCallResult(arr: JSONArray) {
+        val msgId = arr.optString(1)
+        val payload = arr.optJSONObject(2) ?: return
+        val status = payload.optString("status", "Unknown")
+        val accepted = status.equals("Accepted", ignoreCase = true)
+        val action = lastCommandAction
+        LogRepository.append("Gateway: ACK $status for ${action ?: "command"} (id=$msgId)")
+        _commandAck.value = CommandAck(
+            messageId = msgId,
+            accepted = accepted,
+            status = status,
+            action = action,
+        )
+        if (!accepted) {
+            if (action == "RemoteStart") {
+                _bridgeDetectedState.value = DeviceState.STATE_AVAILABLE
+                _chargingStartedAt.value = null
+            } else if (action == "RemoteStop") {
+                _bridgeDetectedState.value = DeviceState.STATE_CHARGING
+            }
+        }
+    }
+
     private fun handleOcppPacket(payload: String) {
         try {
             val arr = JSONArray(payload)
+            if (arr.length() < 3) return
+            val frameType = when (val raw = arr.opt(0)) {
+                is Number -> raw.toInt()
+                else -> arr.optString(0).toIntOrNull() ?: -1
+            }
+            if (frameType == 3) {
+                handleCallResult(arr)
+                return
+            }
             if (arr.length() < 4) return
             val msgType = arr.getString(2)
             val data = arr.getJSONObject(3)
@@ -357,36 +467,46 @@ object GatewayManager {
                 "RemoteStart" -> {
                     pendingMode = data.optString("mode", "full")
                     pendingTid = data.optString("tid")
+                    lastCommandAction = "RemoteStart"
+                    lastCommandMsgId = arr.optString(1)
+                }
+                "RemoteStop" -> {
+                    lastCommandAction = "RemoteStop"
+                    lastCommandMsgId = arr.optString(1)
                 }
                 "StartTransaction" -> {
                     val tid = data.getString("transactionId")
                     val mStart = data.getDouble("meterStart").toFloat()
                     val mode = if (tid == pendingTid) pendingMode else "full"
+                    val startedAt = System.currentTimeMillis()
                     TransactionRepository.startSession(
                         ChargingSession(
                             transactionId = tid,
                             deviceId = deviceId,
-                            startTime = System.currentTimeMillis(),
+                            startTime = startedAt,
                             meterStart = mStart,
                             mode = mode,
                             status = "Active"
                         )
                     )
                     sessionMeterData[tid] = mutableListOf()
-                    _bridgeDetectedState.value = 3 // STATE_CHARGING
+                    _chargingStartedAt.value = startedAt
+                    _bridgeDetectedState.value = DeviceState.STATE_CHARGING
+                    LogRepository.append("Gateway: StartTransaction tid=$tid — charging confirmed")
                 }
                 "StopTransaction" -> {
                     val tid = data.getString("transactionId")
                     val mStop = data.getDouble("meterStop").toFloat()
                     TransactionRepository.updateSession(tid, mStop, System.currentTimeMillis(), "Completed")
                     
-                    // Save collected meter data
                     sessionMeterData[tid]?.let { list ->
                         TransactionRepository.saveMeterDataList(tid, list)
                     }
                     sessionMeterData.remove(tid)
                     
-                    _bridgeDetectedState.value = 0 // STATE_AVAILABLE
+                    _chargingStartedAt.value = null
+                    _bridgeDetectedState.value = DeviceState.STATE_AVAILABLE
+                    LogRepository.append("Gateway: StopTransaction tid=$tid — charging stopped")
                 }
                 "MeterValues" -> {
                     val tid = data.optString("transactionId")
@@ -395,7 +515,6 @@ object GatewayManager {
                         val mCurrent = mv?.optDouble("e")?.toFloat() ?: 0f
                         TransactionRepository.addMeterValue(tid, mCurrent)
                         
-                        // Collect data for chart
                         parseMeterData(payload)?.let { meterData ->
                             if (!sessionMeterData.containsKey(tid)) {
                                 sessionMeterData[tid] = mutableListOf()
@@ -415,3 +534,11 @@ object GatewayManager {
         LogRepository.append("Bridge ${if (enabled) "ENABLED" else "DISABLED"}")
     }
 }
+
+data class CommandAck(
+    val messageId: String,
+    val accepted: Boolean,
+    val status: String,
+    val action: String?,
+    val timestamp: Long = System.currentTimeMillis(),
+)

@@ -91,8 +91,8 @@ class HistoryFragment : Fragment() {
                 txtStatus.setBackgroundResource(if (session.status == "Active") R.drawable.bg_status_active else R.drawable.bg_status_completed)
                 txtTid.text = "ID: ${session.transactionId} (${session.deviceId})"
                 
-                val energyKwh = session.energyConsumed / 1000f
-                txtEnergy.text = String.format(Locale.getDefault(), "%.3f kWh", energyKwh)
+                val energyWh = session.energyConsumed
+                txtEnergy.text = MeterUnits.formatEnergyWh(energyWh)
                 
                 txtTimeStart.text = "Started: ${timeFormat.format(Date(session.startTime))}"
                 

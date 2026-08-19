@@ -1,10 +1,16 @@
 package com.drivool.iot.powertap
 
 import android.Manifest
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothManager
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.text.InputType
 import android.util.Log
 import android.view.LayoutInflater
@@ -75,6 +81,7 @@ class HomeFragment : Fragment() {
     private var mainContent: View? = null
     private var emptyState: View? = null
     private var txtBleStatus: TextView? = null
+    private var txtBtOffBanner: TextView? = null
 
     private var pairingDialog: androidx.appcompat.app.AlertDialog? = null
     private var pairingMessageView: TextView? = null
@@ -83,6 +90,30 @@ class HomeFragment : Fragment() {
     private var pendingPairName: String = "PowerTap"
     private var pendingPairDeviceId: String = ""
     private var isPairingFromHome = false
+    private var silentAutoConnect = false
+    private var blePermissionAsked = false
+    private var startProgressMessage = "Starting..."
+    private var chargingUiStartedAt = 0L
+    private var lastAnnouncedBleState: ConnectionState? = null
+    private var lastHandledAckTs = 0L
+    private var showingChargingCard = false
+
+    private val bluetoothReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action != BluetoothAdapter.ACTION_STATE_CHANGED) return
+            when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)) {
+                BluetoothAdapter.STATE_OFF, BluetoothAdapter.STATE_TURNING_OFF -> {
+                    Toast.makeText(context, "Bluetooth is off — turn it on to connect", Toast.LENGTH_SHORT).show()
+                    updateBleStatus(GatewayManager.bleTransport.connectionState.value)
+                }
+                BluetoothAdapter.STATE_ON -> {
+                    Toast.makeText(context, "Bluetooth on — connecting to last PowerTap…", Toast.LENGTH_SHORT).show()
+                    maybeAutoConnect()
+                    updateBleStatus(GatewayManager.bleTransport.connectionState.value)
+                }
+            }
+        }
+    }
 
     private val qrScanLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -123,7 +154,12 @@ class HomeFragment : Fragment() {
         if (granted) {
             val address = pendingPairAddress
             if (address != null) {
-                pairAndConnect(address, pendingPairDeviceId, pendingPairName)
+                if (silentAutoConnect) {
+                    silentAutoConnect = false
+                    maybeAutoConnect()
+                } else {
+                    pairAndConnect(address, pendingPairDeviceId, pendingPairName)
+                }
             }
         } else {
             Toast.makeText(
@@ -159,6 +195,11 @@ class HomeFragment : Fragment() {
         mainContent = view.findViewById(R.id.mainContent)
         emptyState = view.findViewById(R.id.emptyState)
         txtBleStatus = view.findViewById(R.id.txtBleStatus)
+        txtBtOffBanner = view.findViewById(R.id.txtBtOffBanner)
+
+        txtBtOffBanner?.setOnClickListener {
+            startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
+        }
 
         setupDeviceSelector()
         updateBleStatus(GatewayManager.bleTransport.connectionState.value)
@@ -166,8 +207,14 @@ class HomeFragment : Fragment() {
         btnAddDevice?.setOnClickListener { showAddDeviceMenu(it) }
         btnSetupFirstDevice?.setOnClickListener { showAddDeviceMenu(it) }
         btnDisconnect?.setOnClickListener {
-            GatewayManager.bleTransport.disconnect()
-            Toast.makeText(context, "Disconnecting...", Toast.LENGTH_SHORT).show()
+            val wasCharging = isChargingUi(currentState)
+            GatewayManager.markUserDisconnect()
+            val msg = if (wasCharging) {
+                "Disconnected Bluetooth. Charging continues on the charger."
+            } else {
+                "Disconnected from PowerTap"
+            }
+            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
             updateBleStatus(ConnectionState.Disconnected)
         }
 
@@ -180,34 +227,7 @@ class HomeFragment : Fragment() {
         // Initialize Tabs
         tabLayout?.addOnTabSelectedListener(object : TabLayout.OnTabSelectedListener {
             override fun onTabSelected(tab: TabLayout.Tab?) {
-                when (tab?.position) {
-                    0 -> {
-                        txtTitle?.text = "FULL CHARGE"
-                        txtSubtitle?.visibility = View.VISIBLE
-                        txtIcon?.visibility = View.VISIBLE
-                        txtIcon?.text = "🔋"
-                        txtSubtitle?.text = "Charge to 100% capacity"
-                        sliderSection?.visibility = View.GONE
-                    }
-                    1 -> {
-                        txtTitle?.text = "SET TIME"
-                        txtSubtitle?.visibility = View.GONE
-                        txtIcon?.visibility = View.GONE
-                        sliderSection?.visibility = View.VISIBLE
-                        seekBar?.max = 576
-                        seekBar?.progress = time / 5
-                        updateTimeUI()
-                    }
-                    2 -> {
-                        txtTitle?.text = "SET UNITS"
-                        txtSubtitle?.visibility = View.GONE
-                        txtIcon?.visibility = View.GONE
-                        sliderSection?.visibility = View.VISIBLE
-                        seekBar?.max = 100
-                        seekBar?.progress = units
-                        updateUnitsUI()
-                    }
-                }
+                applySelectedTab(tab?.position ?: 0)
                 updateOnlineStatus()
             }
             override fun onTabUnselected(tab: TabLayout.Tab?) {}
@@ -285,9 +305,10 @@ class HomeFragment : Fragment() {
 
                     currentState = DeviceState.STATE_STARTING
                     commandStartTime = System.currentTimeMillis()
+                    startProgressMessage = "Starting..."
                     updateOnlineStatus()
                     
-                    sb.showProgress("Starting...")
+                    sb.showProgress(startProgressMessage)
                     FirebaseApiManager.startCharging(deviceId, mode, value,
                         onResult = { 
                             LogRepository.append("Firebase: Start Charging Ack: $it")
@@ -323,9 +344,10 @@ class HomeFragment : Fragment() {
 
                         currentState = DeviceState.STATE_STOPPING
                         commandStartTime = System.currentTimeMillis()
+                        startProgressMessage = "Stopping..."
                         updateOnlineStatus()
                         
-                        sb.showProgress("Stopping...")
+                        sb.showProgress(startProgressMessage)
                         FirebaseApiManager.stopCharging(deviceId, tid,
                             onResult = { 
                                 LogRepository.append("Firebase: Stop Charging Ack: $it")
@@ -364,16 +386,16 @@ class HomeFragment : Fragment() {
             }
         }
 
-        // Periodic aliveness check (every 5 seconds)
+        // Periodic aliveness check + charging duration clock
         viewLifecycleOwner.lifecycleScope.launch {
             while (true) {
-                kotlinx.coroutines.delay(5000)
-                
-                // Check command timeout
+                delay(1000)
+
                 if (commandStartTime > 0 && System.currentTimeMillis() - commandStartTime > COMMAND_TIMEOUT) {
                     activity?.runOnUiThread {
                         if (currentState == DeviceState.STATE_STARTING) {
                             currentState = DeviceState.STATE_AVAILABLE
+                            chargingUiStartedAt = 0L
                             Toast.makeText(context, "Start Command Timed Out", Toast.LENGTH_LONG).show()
                         } else if (currentState == DeviceState.STATE_STOPPING) {
                             currentState = DeviceState.STATE_CHARGING
@@ -384,6 +406,10 @@ class HomeFragment : Fragment() {
                     }
                 } else {
                     updateOnlineStatus()
+                }
+
+                if (isChargingUi(currentState)) {
+                    GatewayManager.latestMeterData.value?.let { updateLCD(it) }
                 }
             }
         }
@@ -408,6 +434,7 @@ class HomeFragment : Fragment() {
 
         viewLifecycleOwner.lifecycleScope.launch {
             GatewayManager.bleTransport.connectionState.collect { state ->
+                announceBleState(state)
                 updateBleStatus(state)
                 if (!isPairingFromHome) return@collect
                 when (state) {
@@ -428,6 +455,49 @@ class HomeFragment : Fragment() {
             }
         }
 
+        // Firmware type-3 ACK: Accepted means "command received", StartTransaction means charging began
+        viewLifecycleOwner.lifecycleScope.launch {
+            GatewayManager.commandAck.collect { ack ->
+                ack ?: return@collect
+                if (ack.timestamp == lastHandledAckTs) return@collect
+                lastHandledAckTs = ack.timestamp
+                activity?.runOnUiThread {
+                    when (ack.action) {
+                        "RemoteStart" -> {
+                            if (ack.accepted) {
+                                startProgressMessage = "Buffering…"
+                                if (currentState == DeviceState.STATE_STARTING ||
+                                    currentState == DeviceState.STATE_AVAILABLE
+                                ) {
+                                    currentState = DeviceState.STATE_STARTING
+                                }
+                                Toast.makeText(context, "Charger accepted — starting…", Toast.LENGTH_SHORT).show()
+                                updateOnlineStatus()
+                            } else {
+                                currentState = DeviceState.STATE_AVAILABLE
+                                chargingUiStartedAt = 0L
+                                commandStartTime = 0
+                                Toast.makeText(context, "Charger rejected start (${ack.status})", Toast.LENGTH_LONG).show()
+                                updateOnlineStatus()
+                            }
+                        }
+                        "RemoteStop" -> {
+                            if (ack.accepted) {
+                                startProgressMessage = "Stopping..."
+                                Toast.makeText(context, "Charger accepted stop", Toast.LENGTH_SHORT).show()
+                                updateOnlineStatus()
+                            } else {
+                                currentState = DeviceState.STATE_CHARGING
+                                commandStartTime = 0
+                                Toast.makeText(context, "Charger rejected stop (${ack.status})", Toast.LENGTH_LONG).show()
+                                updateOnlineStatus()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Bridge state override for instant UI reaction
         viewLifecycleOwner.lifecycleScope.launch {
             GatewayManager.bridgeDetectedState.collect { newState ->
@@ -435,7 +505,13 @@ class HomeFragment : Fragment() {
                     if (currentState != it) {
                         Log.d(TAG, "Bridge detected state change: $currentState -> $it")
                         currentState = it
+                        if (isChargingUi(it) && chargingUiStartedAt == 0L) {
+                            chargingUiStartedAt = GatewayManager.chargingStartedAt.value
+                                ?: System.currentTimeMillis()
+                        }
+                        if (!isChargingUi(it)) chargingUiStartedAt = 0L
                         updateOnlineStatus()
+                        GatewayManager.latestMeterData.value?.let { data -> updateLCD(data) }
                     }
                 }
             }
@@ -466,12 +542,163 @@ class HomeFragment : Fragment() {
         mainContent = null
         emptyState = null
         txtBleStatus = null
+        txtBtOffBanner = null
         pairingTimeoutJob?.cancel()
         pairingTimeoutJob = null
         pairingDialog?.dismiss()
         pairingDialog = null
         pairingMessageView = null
         isPairingFromHome = false
+    }
+
+    override fun onStart() {
+        super.onStart()
+        val ctx = context ?: return
+        val filter = IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ctx.registerReceiver(bluetoothReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            ctx.registerReceiver(bluetoothReceiver, filter)
+        }
+        maybeAutoConnect()
+        updateBleStatus(GatewayManager.bleTransport.connectionState.value)
+    }
+
+    override fun onStop() {
+        try {
+            context?.unregisterReceiver(bluetoothReceiver)
+        } catch (_: IllegalArgumentException) { }
+        super.onStop()
+    }
+
+    private fun isChargingUi(state: Int): Boolean = state == DeviceState.STATE_STARTING ||
+        state == DeviceState.STATE_STARTED ||
+        state == DeviceState.STATE_CHARGING ||
+        state == DeviceState.STATE_STOPPING
+
+    private fun isBluetoothEnabled(): Boolean {
+        val ctx = context ?: return false
+        val adapter = (ctx.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+        return adapter != null && adapter.isEnabled
+    }
+
+    private fun lastDeviceDisplayName(): String {
+        val ctx = context ?: return "PowerTap"
+        val last = BlePrefs.getLastDeviceAddress(ctx) ?: return "PowerTap"
+        val known = BlePrefs.getKnownDevices(ctx)
+        val index = known.indexOfFirst { it.second.equals(last, ignoreCase = true) }
+        return if (index >= 0) "PowerTap ${index + 1}" else "PowerTap"
+    }
+
+    /**
+     * Opening the app reconnects the last charger without the pairing dialog.
+     * Explicit Disconnect pauses this until the user picks a device again.
+     */
+    private fun maybeAutoConnect() {
+        val ctx = context ?: return
+        if (GatewayManager.userRequestedDisconnect) return
+        if (!BlePrefs.isAutoConnectEnabled(ctx)) return
+        val last = BlePrefs.getLastDeviceAddress(ctx) ?: return
+
+        if (!isBluetoothEnabled()) {
+            updateBleStatus(GatewayManager.bleTransport.connectionState.value)
+            return
+        }
+        if (!hasBlePermissions(ctx)) {
+            if (blePermissionAsked) return
+            blePermissionAsked = true
+            silentAutoConnect = true
+            pendingPairAddress = last
+            pendingPairDeviceId = DeviceIdentity.deviceIdFromBle(last)
+                ?: DeviceIdentity.cleanHex(last)
+                ?: last
+            pendingPairName = lastDeviceDisplayName()
+            blePermissionLauncher.launch(blePermissions())
+            return
+        }
+        GatewayManager.tryAutoConnect()
+    }
+
+    private fun announceBleState(state: ConnectionState) {
+        if (isPairingFromHome) {
+            lastAnnouncedBleState = state
+            return
+        }
+        val previous = lastAnnouncedBleState
+        if (previous == state) return
+        lastAnnouncedBleState = state
+        val name = lastDeviceDisplayName()
+        when {
+            state == ConnectionState.Connected && previous != ConnectionState.Connected ->
+                Toast.makeText(context, "Connected to $name", Toast.LENGTH_SHORT).show()
+            state == ConnectionState.Disconnected &&
+                (previous == ConnectionState.Connected || previous == ConnectionState.Connecting) ->
+                Toast.makeText(context, "Disconnected from $name", Toast.LENGTH_SHORT).show()
+            state == ConnectionState.Failed && previous != ConnectionState.Failed ->
+                Toast.makeText(
+                    context,
+                    "Couldn't connect to $name. Make sure it's on and nearby.",
+                    Toast.LENGTH_LONG,
+                ).show()
+        }
+    }
+
+    private fun applySelectedTab(position: Int) {
+        if (isChargingUi(currentState)) {
+            updateChargingCard()
+            return
+        }
+        when (position) {
+            1 -> {
+                txtTitle?.text = "SET TIME"
+                txtSubtitle?.visibility = View.GONE
+                txtIcon?.visibility = View.GONE
+                sliderSection?.visibility = View.VISIBLE
+                seekBar?.max = 576
+                seekBar?.progress = time / 5
+                updateTimeUI()
+            }
+            2 -> {
+                txtTitle?.text = "SET UNITS"
+                txtSubtitle?.visibility = View.GONE
+                txtIcon?.visibility = View.GONE
+                sliderSection?.visibility = View.VISIBLE
+                seekBar?.max = 100
+                seekBar?.progress = units
+                updateUnitsUI()
+            }
+            else -> {
+                txtTitle?.text = "FULL CHARGE"
+                txtSubtitle?.visibility = View.VISIBLE
+                txtIcon?.visibility = View.VISIBLE
+                txtIcon?.text = "🔋"
+                txtSubtitle?.text = "Charge to 100% capacity"
+                sliderSection?.visibility = View.GONE
+            }
+        }
+    }
+
+    private fun updateChargingCard() {
+        txtIcon?.visibility = View.VISIBLE
+        txtSubtitle?.visibility = View.VISIBLE
+        sliderSection?.visibility = View.GONE
+        when (currentState) {
+            DeviceState.STATE_STARTING -> {
+                txtIcon?.text = "⚡"
+                txtTitle?.text = "STARTING"
+                txtSubtitle?.text = "Waiting for the charger to begin…"
+            }
+            DeviceState.STATE_STOPPING -> {
+                txtIcon?.text = "⚡"
+                txtTitle?.text = "STOPPING"
+                txtSubtitle?.text = "Ending this charging session…"
+            }
+            else -> {
+                txtIcon?.text = "⚡"
+                txtTitle?.text = "CHARGING"
+                txtSubtitle?.text = "Charging in progress"
+            }
+        }
     }
 
     private fun setupDeviceSelector() {
@@ -714,6 +941,7 @@ class HomeFragment : Fragment() {
     private fun updateBleStatus(state: ConnectionState) {
         val ctx = context ?: return
         val status = txtBleStatus ?: return
+        val banner = txtBtOffBanner
         val known = BlePrefs.getKnownDevices(ctx)
         val selectedId = MqttPrefs.loadDeviceId(ctx)
         val selected = known.firstOrNull {
@@ -721,22 +949,34 @@ class HomeFragment : Fragment() {
                 DeviceIdentity.cleanHex(it.second) == DeviceIdentity.cleanHex(selectedId)
         }
         val paired = selected?.let { BlePrefs.isPaired(ctx, it.second) } == true
+        val name = lastDeviceDisplayName()
+
+        if (!isBluetoothEnabled()) {
+            banner?.visibility = View.VISIBLE
+            status.visibility = View.GONE
+            updateOnlineStatus()
+            return
+        }
+        banner?.visibility = View.GONE
+        status.visibility = View.VISIBLE
 
         val (text, color) = when (state) {
             ConnectionState.Scanning ->
-                "Looking for your PowerTap nearby…" to R.color.primary_blue
+                "Looking for $name nearby…" to R.color.primary_blue
             ConnectionState.Connecting ->
-                "Found it — pairing now…" to R.color.primary_blue
+                "Connecting to $name…" to R.color.primary_blue
             ConnectionState.Connected ->
-                "Connected over Bluetooth" to R.color.status_success
+                "Connected to $name over Bluetooth" to R.color.status_success
             ConnectionState.Failed ->
-                "Couldn't find the charger. Make sure it's on and nearby, then tap it again." to
+                "Couldn't find $name. Make sure it's on and nearby, then tap it again." to
                     R.color.status_error
             ConnectionState.Disconnected -> when {
+                GatewayManager.userRequestedDisconnect ->
+                    "Disconnected. Tap your PowerTap to reconnect." to R.color.text_secondary
                 selected == null ->
                     "Tap the menu and choose a PowerTap to pair." to R.color.text_secondary
                 paired ->
-                    "Tap your PowerTap to reconnect." to R.color.text_secondary
+                    "Connecting to last PowerTap…" to R.color.text_secondary
                 else ->
                     "Tap your PowerTap to pair. Keep the charger on and nearby." to
                         R.color.status_warning
@@ -860,16 +1100,24 @@ class HomeFragment : Fragment() {
     }
 
     private fun updateLCD(data: com.drivool.iot.powertap.contract.MeterData) {
-        val isCharging = currentState == DeviceState.STATE_CHARGING || currentState == DeviceState.STATE_STARTED || currentState == DeviceState.STATE_STARTING
+        val charging = isChargingUi(currentState)
         
         val voltageStr = String.format(Locale.getDefault(), "%.1fV", data.voltage)
-        val energyStr = String.format(Locale.getDefault(), "%.1fkWh", data.energy)
+        val energyStr = MeterUnits.formatEnergyWh(data.energy)
         val dateFormat = SimpleDateFormat("dd MMM hh:mm a", Locale.getDefault())
         val dateStr = dateFormat.format(Date()).uppercase()
 
-        if (isCharging) {
+        if (charging) {
             val currentStr = String.format(Locale.getDefault(), "%.1fA", data.current)
-            val powerStr = String.format(Locale.getDefault(), "%.1fW", data.power)
+            val powerStr = MeterUnits.formatPowerWatts(data.power)
+            val startedAt = GatewayManager.chargingStartedAt.value
+                ?: TransactionRepository.sessions.value.firstOrNull { it.status == "Active" }?.startTime
+                ?: chargingUiStartedAt.takeIf { it > 0 }
+                ?: commandStartTime.takeIf { it > 0 }
+            if (startedAt != null && chargingUiStartedAt == 0L) chargingUiStartedAt = startedAt
+            val durationStr = MeterUnits.formatDuration(
+                System.currentTimeMillis() - (startedAt ?: System.currentTimeMillis())
+            )
             
             lcdView?.setText(
                 listOf(
@@ -878,8 +1126,9 @@ class HomeFragment : Fragment() {
                     LCDSegment(powerStr, 22f, Align.RIGHT, 1f, true, "POWER")
                 ),
                 listOf(
-                    LCDSegment(energyStr, 20f, Align.LEFT, 1.2f, true, "ENERGY"),
-                    LCDSegment(currentStr, 20f, Align.RIGHT, 1f, true, "CURRENT")
+                    LCDSegment(energyStr, 18f, Align.LEFT, 1f, true, "ENERGY"),
+                    LCDSegment(durationStr, 18f, Align.CENTER, 1.2f, true, "DURATION"),
+                    LCDSegment(currentStr, 18f, Align.RIGHT, 1f, true, "CURRENT")
                 )
             )
         } else {
@@ -898,48 +1147,55 @@ class HomeFragment : Fragment() {
         val currentTime = System.currentTimeMillis() + serverTimeOffset
         val diffSeconds = if (lastFirebaseHeartbeat > 0) (currentTime - lastFirebaseHeartbeat) / 1000 else 999
         
-        // Is online if Firebase heartbeat is recent OR if GatewayManager reports it's online via BLE/MQTT
         val isFirebaseOnline = lastFirebaseHeartbeat > 0 && diffSeconds < 45
         val isGatewayOnline = GatewayManager.isDeviceOnline.value
-        val isOnline = isFirebaseOnline || isGatewayOnline
+        val bleConnected = GatewayManager.bleTransport.connectionState.value == ConnectionState.Connected
+        val isOnline = isFirebaseOnline || isGatewayOnline || bleConnected
         
         activity?.runOnUiThread {
             val sb = sliderButton ?: return@runOnUiThread
-            val subtitle = txtSubtitle ?: return@runOnUiThread
             val tl = tabLayout ?: return@runOnUiThread
             val ss = sliderSection ?: return@runOnUiThread
             val bd = btnDisconnect
 
-            if (isOnline) {
-                bd?.visibility = if (isGatewayOnline) View.VISIBLE else View.GONE
-                
-                // Don't update SB if user is dragging
-                // if (sb.isDragging) return@runOnUiThread // Wait, SliderButtonView doesn't expose isDragging
+            // Disconnect only while this phone holds the BLE link. Hidden during
+            // scan/connect and after the user (or a drop) is no longer GATT-connected.
+            bd?.visibility = if (bleConnected) View.VISIBLE else View.GONE
 
+            val charging = isChargingUi(currentState)
+            if (charging) {
+                updateChargingCard()
+                showingChargingCard = true
+            } else if (showingChargingCard) {
+                applySelectedTab(tl.selectedTabPosition)
+                showingChargingCard = false
+            }
+
+            if (isOnline) {
                 when (currentState) {
                     DeviceState.STATE_AVAILABLE, DeviceState.STATE_STOPPED -> {
                         sb.activate(true)
                         sb.hideProgress()
-                        sb.setState(true) // Left side
+                        sb.setState(true)
                         sb.setText(if (tl.selectedTabPosition == 0) "Slide to Start Charging" else "Slide to Confirm")
                         ss.visibility = if (tl.selectedTabPosition == 0) View.GONE else View.VISIBLE
                     }
                     DeviceState.STATE_STARTING -> {
                         sb.activate(true)
-                        sb.showProgress("Starting...")
+                        sb.showProgress(startProgressMessage)
                         ss.visibility = View.GONE
                     }
                     DeviceState.STATE_CHARGING, DeviceState.STATE_STARTED -> {
                         sb.activate(true)
                         sb.hideProgress()
-                        sb.setState(false) // Right side
+                        sb.setState(false)
                         sb.setText("Slide to Stop")
                         ss.visibility = View.GONE
-                        commandStartTime = 0 // Reset timeout
+                        commandStartTime = 0
                     }
                     DeviceState.STATE_STOPPING -> {
                         sb.activate(true)
-                        sb.showProgress("Stopping...")
+                        sb.showProgress(startProgressMessage)
                         ss.visibility = View.GONE
                     }
                     else -> {
@@ -948,15 +1204,31 @@ class HomeFragment : Fragment() {
                     }
                 }
             } else {
-                bd?.visibility = View.GONE
                 val bleState = GatewayManager.bleTransport.connectionState.value
                 val pairing = isPairingFromHome ||
                     bleState == ConnectionState.Scanning ||
                     bleState == ConnectionState.Connecting
-                sb.activate(false)
-                sb.setText(
-                    if (pairing) "Pairing with PowerTap…" else "Device is Offline",
-                )
+                if (isChargingUi(currentState)) {
+                    // Session is live on the charger; don't grey the slider just because
+                    // cloud heartbeat lagged.
+                    sb.activate(true)
+                    if (currentState == DeviceState.STATE_STARTING || currentState == DeviceState.STATE_STOPPING) {
+                        sb.showProgress(startProgressMessage)
+                    } else {
+                        sb.hideProgress()
+                        sb.setState(false)
+                        sb.setText("Slide to Stop")
+                    }
+                } else {
+                    sb.activate(false)
+                    sb.setText(
+                        when {
+                            !isBluetoothEnabled() -> "Turn on Bluetooth"
+                            pairing -> "Connecting to PowerTap…"
+                            else -> "Device is Offline"
+                        },
+                    )
+                }
             }
         }
     }
@@ -991,20 +1263,28 @@ class HomeFragment : Fragment() {
 
                     val newState = (snapshot.child("state").value as? Long)?.toInt() ?: DeviceState.STATE_AVAILABLE
                     
-                    // Logic to accept new state: 
-                    // If we were STARTING, and it's now CHARGING/STARTED, accept it.
-                    // If we were STOPPING, and it's now AVAILABLE/STOPPED, accept it.
-                    // Otherwise, if we aren't in a transient state, just accept it.
-                    
                     val wasTransient = currentState == DeviceState.STATE_STARTING || currentState == DeviceState.STATE_STOPPING
+                    val bleConnected = GatewayManager.bleTransport.connectionState.value == ConnectionState.Connected
+                    val localCharging = currentState == DeviceState.STATE_CHARGING ||
+                        currentState == DeviceState.STATE_STARTED ||
+                        currentState == DeviceState.STATE_STARTING
+                    val remoteIdle = newState == DeviceState.STATE_AVAILABLE || newState == DeviceState.STATE_STOPPED
+                    // BLE StartTransaction is faster than Firebase. Don't let a stale
+                    // "available" snapshot grey the slider after charging has begun.
+                    val ignoreStaleIdle = bleConnected && localCharging && remoteIdle
                     
-                    if (!wasTransient || 
+                    if (!ignoreStaleIdle && (!wasTransient || 
                         (currentState == DeviceState.STATE_STARTING && (newState == DeviceState.STATE_CHARGING || newState == DeviceState.STATE_STARTED)) ||
-                        (currentState == DeviceState.STATE_STOPPING && (newState == DeviceState.STATE_AVAILABLE || newState == DeviceState.STATE_STOPPED || newState == DeviceState.STATE_STOPPING))) {
+                        (currentState == DeviceState.STATE_STOPPING && (newState == DeviceState.STATE_AVAILABLE || newState == DeviceState.STATE_STOPPED || newState == DeviceState.STATE_STOPPING)))) {
                         
                         if (currentState != newState) {
                             Log.d(TAG, "State transition: $currentState -> $newState")
                             currentState = newState
+                            if (isChargingUi(newState) && chargingUiStartedAt == 0L) {
+                                chargingUiStartedAt = GatewayManager.chargingStartedAt.value
+                                    ?: System.currentTimeMillis()
+                            }
+                            if (!isChargingUi(newState)) chargingUiStartedAt = 0L
                         }
                     }
 

@@ -86,6 +86,22 @@
             </LinearLayout>
 
             <TextView
+                android:id="@+id/txtBtOffBanner"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="12dp"
+                android:background="#FFF3E0"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center"
+                android:padding="12dp"
+                android:text="Bluetooth is off. Turn it on to connect to your PowerTap."
+                android:textColor="#E65100"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
+
+            <TextView
                 android:id="@+id/txtBleStatus"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
