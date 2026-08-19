@@ -8,6 +8,7 @@ object BlePrefs {
     private const val KEY_LAST_ADDRESS = "last_address"
     private const val KEY_AUTO_CONNECT = "auto_connect"
     private const val KEY_KNOWN_DEVICES = "known_devices"
+    private const val KEY_PAIRED_DEVICES = "paired_devices"
 
     fun saveLastDevice(context: Context, address: String, name: String?) {
         val ble = DeviceIdentity.toBleAddress(address)
@@ -93,5 +94,24 @@ object BlePrefs {
         }
 
         return deduped
+    }
+
+    /**
+     * True once GATT has connected at least once. Used so Home can label
+     * a charger as "needs pairing" vs "tap to reconnect".
+     */
+    fun markPaired(context: Context, address: String) {
+        val ble = DeviceIdentity.toBleAddress(address) ?: return
+        val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val known = p.getStringSet(KEY_PAIRED_DEVICES, emptySet())?.toMutableSet() ?: mutableSetOf()
+        known.removeAll { DeviceIdentity.sameDevice(it, ble) }
+        known.add(ble)
+        p.edit().putStringSet(KEY_PAIRED_DEVICES, known).apply()
+    }
+
+    fun isPaired(context: Context, address: String): Boolean {
+        val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val known = p.getStringSet(KEY_PAIRED_DEVICES, emptySet()) ?: emptySet()
+        return known.any { DeviceIdentity.sameDevice(it, address) }
     }
 }

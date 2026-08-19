@@ -84,7 +84,7 @@ class LCDFragment : Fragment() {
     private fun showIdle() {
         lcd.setText(
             listOf(
-                LCDSegment("248V", 28f, Align.LEFT),
+                LCDSegment("248.0V", 28f, Align.LEFT),
                 LCDSegment("119.6Wh", 28f, Align.RIGHT)
             ),
             listOf(
@@ -107,7 +107,7 @@ class LCDFragment : Fragment() {
     private fun showCharging() {
         lcd.setText(
             listOf(
-                LCDSegment("240V", 28f, Align.LEFT),
+                LCDSegment("240.0V", 28f, Align.LEFT),
                 LCDSegment("4.5A", 28f, Align.CENTER),
                 LCDSegment("1.1kW", 28f, Align.RIGHT)
             ),

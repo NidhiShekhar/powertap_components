@@ -59,33 +59,72 @@ object GatewayManager {
     private var preferredDeviceId: String? = null
 
     /**
-     * Connect to a PowerTap using details from a scanned QR code.
-     * Saves BLE + MQTT identity, then starts a targeted BLE scan/connect.
+     * Pair/connect to a PowerTap over BLE.
+     *
+     * Android often fails a first-time [BleTransport.connect] unless the charger has
+     * just been seen in a scan. Home, QR, and Add Device all go through this path
+     * so a first-time user can tap a device on Home and still pair.
+     *
+     * @param scanFirst true = scan until this MAC is advertised, then GATT connect
+     *                  (required from Home / QR). false = connect immediately because
+     *                  we already have a fresh scan result (Add Device list).
      * @return false if Bluetooth is unavailable/disabled
      */
-    fun connectFromQr(qr: PowerTapQr): Boolean {
+    fun connectToBle(
+        bleAddress: String,
+        deviceId: String? = null,
+        displayName: String? = null,
+        scanFirst: Boolean = true,
+    ): Boolean {
         val ctx = context ?: return false
         val adapter = (ctx.getSystemService(Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager)?.adapter
         if (adapter == null || !adapter.isEnabled) {
-            LogRepository.append("Gateway: QR connect aborted — Bluetooth off")
+            LogRepository.append("Gateway: BLE connect aborted — Bluetooth off")
             return false
         }
 
-        preferredDeviceId = qr.deviceId
-        _currentDeviceId.value = qr.deviceId
+        val resolvedId = deviceId?.takeIf { it.isNotBlank() }
+            ?: DeviceIdentity.deviceIdFromBle(bleAddress)
+            ?: DeviceIdentity.cleanHex(bleAddress)
+            ?: ""
 
-        val config = MqttPrefs.load(ctx)
-        MqttPrefs.save(ctx, config, qr.deviceId)
-        BlePrefs.saveLastDevice(ctx, qr.bleAddress, qr.displayName)
+        if (resolvedId.isNotEmpty()) {
+            preferredDeviceId = resolvedId
+            _currentDeviceId.value = resolvedId
+            val config = MqttPrefs.load(ctx)
+            MqttPrefs.save(ctx, config, resolvedId)
+            _mqttTransport.connect(config, resolvedId)
+        }
 
-        LogRepository.append("Gateway: QR connect → BLE ${qr.bleAddress}, deviceId ${qr.deviceId}")
-        _mqttTransport.connect(config, qr.deviceId)
+        val name = displayName ?: if (resolvedId.length == 12) "PowerTap_$resolvedId" else null
+        BlePrefs.saveLastDevice(ctx, bleAddress, name)
 
-        // Same path as auto-connect: scan until this MAC is seen, then GATT connect.
+        LogRepository.append(
+            "Gateway: BLE connect → $bleAddress, deviceId $resolvedId, scanFirst=$scanFirst",
+        )
+
+        val current = bleTransport.connectedAddress.value
+        if (current != null && !current.equals(bleAddress, ignoreCase = true)) {
+            bleTransport.disconnect()
+        }
+
         bleTransport.stopScan()
-        bleTransport.startScan(qr.bleAddress)
+        if (scanFirst) {
+            // Scan until this MAC is seen, then GATT connect. Direct connectGatt
+            // without a recent advertisement is why Home used to fail the first time.
+            bleTransport.startScan(bleAddress)
+        } else {
+            bleTransport.connect(bleAddress)
+        }
         return true
     }
+
+    /**
+     * Connect to a PowerTap using details from a scanned QR code.
+     * @return false if Bluetooth is unavailable/disabled
+     */
+    fun connectFromQr(qr: PowerTapQr): Boolean =
+        connectToBle(qr.bleAddress, qr.deviceId, qr.displayName, scanFirst = true)
 
     fun init(context: Context) {
         this.context = context.applicationContext
@@ -188,6 +227,7 @@ object GatewayManager {
                         val deviceName = discoveredName
                             ?: if (deviceId.length == 12) "PowerTap_$deviceId" else null
                         BlePrefs.saveLastDevice(ctx, address, deviceName)
+                        BlePrefs.markPaired(ctx, address)
 
                         _currentDeviceId.value = deviceId
                         val config = MqttPrefs.load(ctx)

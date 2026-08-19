@@ -169,7 +169,7 @@ void getVoltageEnergyString(char *dest, double voltage, double energy) {
     
     // 1. Format the pieces
     // Result example: "230V"
-    int leftLen = sprintf(leftPart, "%.0fV", voltage/1000.0);
+    int leftLen = sprintf(leftPart, "%.1fV", voltage/1000.0);
     
     // Result example: "1.2KWh"
     int rightLen = (energy > 1000000) ? sprintf(rightPart, "%.1fKWh", energy / 1000000.0) : sprintf(rightPart, "%.1fWh", energy/1000.0) ;
@@ -207,14 +207,14 @@ void showMeterDetailsOnLCD()
     if(gFlags.Relay){
         if(gMetroData.powerActive > 1000000){
 
-          sprintf(temp, "%.0fV %.1fA %.1fKW",
+          sprintf(temp, "%.1fV %.1fA %.1fKW",
                         gMetroData.rmsvoltage / 1000.0,
                         gMetroData.rmscurrent / 1000.0,
                         gMetroData.powerActive / 1000000.0);
         }
         else {
 
-          sprintf(temp, "%.0fV %.1fA %.1fW",
+          sprintf(temp, "%.1fV %.1fA %.1fW",
                         gMetroData.rmsvoltage / 1000.0,
                         gMetroData.rmscurrent / 1000.0,
                         gMetroData.powerActive / 1000.0);          

@@ -81,8 +81,14 @@ class DeviceScanActivity : AppCompatActivity() {
                     .setNegativeButton("Cancel", null)
                     .show()
             } else {
-                GatewayManager.bleTransport.connect(device.address)
-                Toast.makeText(this, "Connecting to ${device.displayName}", Toast.LENGTH_SHORT).show()
+                val deviceId = DeviceIdentity.deviceIdFromBle(device.address)
+                GatewayManager.connectToBle(
+                    bleAddress = device.address,
+                    deviceId = deviceId,
+                    displayName = device.displayName,
+                    scanFirst = false,
+                )
+                Toast.makeText(this, "Pairing with ${device.displayName}…", Toast.LENGTH_SHORT).show()
                 finish()
             }
         }

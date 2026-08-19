@@ -128,6 +128,19 @@ class BleTransport(
             log("Missing scan permission")
             return
         }
+        // If we already saw this charger in a recent scan, skip another scan and
+        // GATT-connect immediately. Direct connect without any advertisement is
+        // what used to fail on Home for first-time users.
+        if (targetAddress != null) {
+            val alreadySeen = _discoveredDevices.value.any {
+                it.address.equals(targetAddress, ignoreCase = true)
+            }
+            if (alreadySeen) {
+                log("Target $targetAddress already advertised — connecting now")
+                connect(targetAddress)
+                return
+            }
+        }
         _discoveredDevices.value = emptyList()
         this.targetAddress = targetAddress
 

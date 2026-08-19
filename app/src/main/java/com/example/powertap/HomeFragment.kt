@@ -1,6 +1,9 @@
 package com.drivool.iot.powertap
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.text.InputType
 import android.util.Log
@@ -18,12 +21,16 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
 import androidx.fragment.app.Fragment
 import com.drivool.iot.powertap.ble.BlePrefs
+import com.drivool.iot.powertap.contract.ConnectionState
 import com.drivool.iot.powertap.mqtt.MqttPrefs
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.tabs.TabLayout
 import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
@@ -67,6 +74,15 @@ class HomeFragment : Fragment() {
     private var btnSetupFirstDevice: Button? = null
     private var mainContent: View? = null
     private var emptyState: View? = null
+    private var txtBleStatus: TextView? = null
+
+    private var pairingDialog: androidx.appcompat.app.AlertDialog? = null
+    private var pairingMessageView: TextView? = null
+    private var pairingTimeoutJob: Job? = null
+    private var pendingPairAddress: String? = null
+    private var pendingPairName: String = "PowerTap"
+    private var pendingPairDeviceId: String = ""
+    private var isPairingFromHome = false
 
     private val qrScanLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -74,13 +90,14 @@ class HomeFragment : Fragment() {
         if (result.resultCode == AppCompatActivity.RESULT_OK) {
             val name = result.data?.getStringExtra(QrScanActivity.EXTRA_DISPLAY_NAME)
                 ?: "PowerTap"
-            Toast.makeText(context, "Connecting to $name", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "Pairing with $name", Toast.LENGTH_SHORT).show()
             setupDeviceSelector()
             result.data?.getStringExtra(QrScanActivity.EXTRA_DEVICE_ID)?.let { id ->
                 deviceId = id
                 updateDeviceSelectorText(id)
                 setupFirebaseListener()
             }
+            updateBleStatus(GatewayManager.bleTransport.connectionState.value)
         }
     }
 
@@ -95,6 +112,25 @@ class HomeFragment : Fragment() {
                 updateDeviceSelectorText(id)
                 setupFirebaseListener()
             }
+        }
+        updateBleStatus(GatewayManager.bleTransport.connectionState.value)
+    }
+
+    private val blePermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { grants ->
+        val granted = grants.values.all { it }
+        if (granted) {
+            val address = pendingPairAddress
+            if (address != null) {
+                pairAndConnect(address, pendingPairDeviceId, pendingPairName)
+            }
+        } else {
+            Toast.makeText(
+                context,
+                "Bluetooth permission is needed to pair with your PowerTap",
+                Toast.LENGTH_LONG,
+            ).show()
         }
     }
 
@@ -122,19 +158,22 @@ class HomeFragment : Fragment() {
         btnSetupFirstDevice = view.findViewById(R.id.btnSetupFirstDevice)
         mainContent = view.findViewById(R.id.mainContent)
         emptyState = view.findViewById(R.id.emptyState)
+        txtBleStatus = view.findViewById(R.id.txtBleStatus)
 
         setupDeviceSelector()
+        updateBleStatus(GatewayManager.bleTransport.connectionState.value)
 
         btnAddDevice?.setOnClickListener { showAddDeviceMenu(it) }
         btnSetupFirstDevice?.setOnClickListener { showAddDeviceMenu(it) }
         btnDisconnect?.setOnClickListener {
             GatewayManager.bleTransport.disconnect()
             Toast.makeText(context, "Disconnecting...", Toast.LENGTH_SHORT).show()
+            updateBleStatus(ConnectionState.Disconnected)
         }
 
         // Initialize LCD
         lcdView?.setText(
-            listOf(LCDSegment("0V", 28f, Align.LEFT, 1f, true), LCDSegment("0Wh", 28f, Align.RIGHT, 1f, true)),
+            listOf(LCDSegment("0.0V", 28f, Align.LEFT, 1f, true), LCDSegment("0.0Wh", 28f, Align.RIGHT, 1f, true)),
             listOf(LCDSegment("9APR 12:04AM", 24f, Align.CENTER, 1f, true))
         )
 
@@ -367,6 +406,28 @@ class HomeFragment : Fragment() {
             }
         }
 
+        viewLifecycleOwner.lifecycleScope.launch {
+            GatewayManager.bleTransport.connectionState.collect { state ->
+                updateBleStatus(state)
+                if (!isPairingFromHome) return@collect
+                when (state) {
+                    ConnectionState.Scanning ->
+                        setPairingMessage("Looking for your charger nearby…")
+                    ConnectionState.Connecting ->
+                        setPairingMessage("Found it — pairing now…")
+                    ConnectionState.Connected -> {
+                        val name = pendingPairName
+                        finishPairing(success = true)
+                        Toast.makeText(context, "Paired with $name", Toast.LENGTH_SHORT).show()
+                        setupDeviceSelector()
+                        updateOnlineStatus()
+                    }
+                    ConnectionState.Failed -> showPairingFailed()
+                    ConnectionState.Disconnected -> { /* wait for timeout or next state */ }
+                }
+            }
+        }
+
         // Bridge state override for instant UI reaction
         viewLifecycleOwner.lifecycleScope.launch {
             GatewayManager.bridgeDetectedState.collect { newState ->
@@ -404,6 +465,13 @@ class HomeFragment : Fragment() {
         btnSetupFirstDevice = null
         mainContent = null
         emptyState = null
+        txtBleStatus = null
+        pairingTimeoutJob?.cancel()
+        pairingTimeoutJob = null
+        pairingDialog?.dismiss()
+        pairingDialog = null
+        pairingMessageView = null
+        isPairingFromHome = false
     }
 
     private fun setupDeviceSelector() {
@@ -428,8 +496,14 @@ class HomeFragment : Fragment() {
                 val text2 = view.findViewById<TextView>(android.R.id.text2)
                 
                 if (position < knownDevices.size) {
+                    val address = knownDevices[position].second
+                    val id = address.replace(":", "")
                     text1.text = "PowerTap ${position + 1}"
-                    text2.text = knownDevices[position].second.replace(":", "")
+                    text2.text = if (BlePrefs.isPaired(ctx, address)) {
+                        id
+                    } else {
+                        "$id  ·  Tap to pair"
+                    }
                     text2.visibility = View.VISIBLE
                 } else {
                     text1.text = "Add new device"
@@ -451,44 +525,226 @@ class HomeFragment : Fragment() {
             }
             if (position !in knownDevices.indices) return@setOnItemClickListener
             val selected = knownDevices[position]
+            val bleAddress = selected.second
+            val resolvedId = DeviceIdentity.deviceIdFromBle(bleAddress)
+                ?: DeviceIdentity.cleanHex(bleAddress)
+                ?: bleAddress
+            val displayName = selected.first?.takeIf { it.isNotBlank() }
+                ?: "PowerTap ${position + 1}"
 
-            // Check if bonded with OS
-            val btManager = ctx.getSystemService(android.content.Context.BLUETOOTH_SERVICE) as android.bluetooth.BluetoothManager
-            val btAdapter = btManager.adapter
+            updateDeviceSelectorText(resolvedId)
+            pairAndConnect(bleAddress, resolvedId, displayName)
+        }
+    }
 
-            if (btAdapter == null || !btAdapter.isEnabled) {
-                Toast.makeText(ctx, "Please enable Bluetooth to connect", Toast.LENGTH_SHORT).show()
-                updateDeviceSelectorText(MqttPrefs.loadDeviceId(ctx))
-                return@setOnItemClickListener
-            }
+    private fun blePermissions(): Array<String> {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+        } else {
+            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+    }
 
-            val isBonded = try {
-                if (androidx.core.app.ActivityCompat.checkSelfPermission(ctx, android.Manifest.permission.BLUETOOTH_CONNECT) == android.content.pm.PackageManager.PERMISSION_GRANTED || android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.S) {
-                    btAdapter?.bondedDevices?.any { it.address == selected.second } == true
-                } else false
-            } catch (e: Exception) { false }
+    private fun hasBlePermissions(ctx: android.content.Context): Boolean {
+        return blePermissions().all {
+            ActivityCompat.checkSelfPermission(ctx, it) == PackageManager.PERMISSION_GRANTED
+        }
+    }
 
-            if (isBonded) {
-                androidx.appcompat.app.AlertDialog.Builder(ctx)
-                    .setTitle("Action Required")
-                    .setMessage("This PowerTap is paired with your phone settings, which prevents the app from connecting. Please 'Unpair' it from Bluetooth Settings and try again.")
-                    .setPositiveButton("Bluetooth Settings") { _, _ ->
-                        startActivity(android.content.Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS))
-                    }
-                    .setNegativeButton("Cancel", null)
-                    .show()
-            } else {
-                val bleAddress = selected.second
-                val resolvedId = DeviceIdentity.deviceIdFromBle(bleAddress)
-                    ?: DeviceIdentity.cleanHex(bleAddress)
-                    ?: bleAddress
-                MqttPrefs.save(ctx, MqttPrefs.load(ctx), resolvedId)
-                GatewayManager.bleTransport.connect(bleAddress)
+    private fun isOsBonded(ctx: android.content.Context, bleAddress: String): Boolean {
+        return try {
+            val btManager = ctx.getSystemService(android.content.Context.BLUETOOTH_SERVICE)
+                as android.bluetooth.BluetoothManager
+            val adapter = btManager.adapter ?: return false
+            val canReadBonds = Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+                ActivityCompat.checkSelfPermission(ctx, Manifest.permission.BLUETOOTH_CONNECT) ==
+                    PackageManager.PERMISSION_GRANTED
+            canReadBonds && adapter.bondedDevices.any { it.address.equals(bleAddress, true) }
+        } catch (_: Exception) {
+            false
+        }
+    }
 
-                deviceId = resolvedId
-                setupFirebaseListener()
+    /**
+     * Pair from Home the same way Add Device does: scan until the charger
+     * advertises, then GATT-connect. Direct connect without a scan is why
+     * first-time Home taps used to fail.
+     */
+    private fun pairAndConnect(bleAddress: String, resolvedId: String, displayName: String) {
+        val ctx = context ?: return
+
+        pendingPairAddress = bleAddress
+        pendingPairDeviceId = resolvedId
+        pendingPairName = displayName
+
+        val btManager = ctx.getSystemService(android.content.Context.BLUETOOTH_SERVICE)
+            as android.bluetooth.BluetoothManager
+        val btAdapter = btManager.adapter
+        if (btAdapter == null || !btAdapter.isEnabled) {
+            Toast.makeText(ctx, "Turn on Bluetooth to pair with your PowerTap", Toast.LENGTH_LONG).show()
+            updateDeviceSelectorText(MqttPrefs.loadDeviceId(ctx))
+            return
+        }
+
+        if (!hasBlePermissions(ctx)) {
+            blePermissionLauncher.launch(blePermissions())
+            return
+        }
+
+        if (isOsBonded(ctx, bleAddress)) {
+            androidx.appcompat.app.AlertDialog.Builder(ctx)
+                .setTitle("Unpair in phone settings first")
+                .setMessage(
+                    "This PowerTap is paired in Android Bluetooth settings, which blocks the app.\n\n" +
+                        "Open Bluetooth settings, tap the charger, choose Forget / Unpair, then come back here and tap it again to pair through PowerTap.",
+                )
+                .setPositiveButton("Bluetooth Settings") { _, _ ->
+                    startActivity(android.content.Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS))
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+            return
+        }
+
+        val alreadyConnected = GatewayManager.bleTransport.connectionState.value == ConnectionState.Connected &&
+            GatewayManager.bleTransport.connectedAddress.value.equals(bleAddress, ignoreCase = true)
+        if (alreadyConnected) {
+            Toast.makeText(ctx, "Already connected to $displayName", Toast.LENGTH_SHORT).show()
+            deviceId = resolvedId
+            setupFirebaseListener()
+            updateBleStatus(ConnectionState.Connected)
+            return
+        }
+
+        deviceId = resolvedId
+        setupFirebaseListener()
+
+        isPairingFromHome = true
+        showPairingDialog(displayName)
+
+        if (!GatewayManager.connectToBle(bleAddress, resolvedId, displayName, scanFirst = true)) {
+            finishPairing(success = false)
+            Toast.makeText(ctx, "Turn on Bluetooth to pair with your PowerTap", Toast.LENGTH_LONG).show()
+            return
+        }
+        pairingTimeoutJob?.cancel()
+        pairingTimeoutJob = viewLifecycleOwner.lifecycleScope.launch {
+            delay(25_000)
+            if (isPairingFromHome &&
+                GatewayManager.bleTransport.connectionState.value != ConnectionState.Connected
+            ) {
+                GatewayManager.bleTransport.stopScan()
+                GatewayManager.bleTransport.disconnect()
+                showPairingFailed()
             }
         }
+    }
+
+    private fun showPairingDialog(name: String) {
+        val ctx = context ?: return
+        pairingDialog?.dismiss()
+
+        val content = layoutInflater.inflate(R.layout.dialog_ble_pairing, null)
+        pairingMessageView = content.findViewById(R.id.txtPairingMessage)
+        pairingMessageView?.text = "Keep $name on and within a few metres of your phone."
+
+        pairingDialog = androidx.appcompat.app.AlertDialog.Builder(ctx)
+            .setTitle("Pairing with $name")
+            .setView(content)
+            .setNegativeButton("Cancel") { _, _ -> cancelPairing() }
+            .setCancelable(false)
+            .show()
+        updateBleStatus(GatewayManager.bleTransport.connectionState.value)
+    }
+
+    private fun setPairingMessage(message: String) {
+        pairingMessageView?.text = message
+    }
+
+    private fun cancelPairing() {
+        pairingTimeoutJob?.cancel()
+        pairingTimeoutJob = null
+        isPairingFromHome = false
+        GatewayManager.bleTransport.stopScan()
+        GatewayManager.bleTransport.disconnect()
+        pairingDialog?.dismiss()
+        pairingDialog = null
+        pairingMessageView = null
+        updateBleStatus(ConnectionState.Disconnected)
+    }
+
+    private fun finishPairing(success: Boolean) {
+        pairingTimeoutJob?.cancel()
+        pairingTimeoutJob = null
+        isPairingFromHome = false
+        pairingDialog?.dismiss()
+        pairingDialog = null
+        pairingMessageView = null
+        if (success) {
+            pendingPairAddress = null
+        }
+        updateBleStatus(GatewayManager.bleTransport.connectionState.value)
+    }
+
+    private fun showPairingFailed() {
+        val ctx = context ?: return
+        val name = pendingPairName
+        val address = pendingPairAddress
+        val id = pendingPairDeviceId
+        finishPairing(success = false)
+
+        pairingDialog = androidx.appcompat.app.AlertDialog.Builder(ctx)
+            .setTitle("Couldn't find $name")
+            .setMessage(
+                "The charger has to be powered on and nearby so the app can pair over Bluetooth — " +
+                    "the same step as Add device → Scan nearby.\n\n" +
+                    "Make sure the PowerTap is on, then try again.",
+            )
+            .setPositiveButton("Try again") { _, _ ->
+                if (address != null) pairAndConnect(address, id, name)
+            }
+            .setNeutralButton("Scan nearby") { _, _ ->
+                nearbyScanLauncher.launch(Intent(ctx, DeviceScanActivity::class.java))
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+        updateBleStatus(ConnectionState.Failed)
+    }
+
+    private fun updateBleStatus(state: ConnectionState) {
+        val ctx = context ?: return
+        val status = txtBleStatus ?: return
+        val known = BlePrefs.getKnownDevices(ctx)
+        val selectedId = MqttPrefs.loadDeviceId(ctx)
+        val selected = known.firstOrNull {
+            DeviceIdentity.sameDevice(it.second, selectedId) ||
+                DeviceIdentity.cleanHex(it.second) == DeviceIdentity.cleanHex(selectedId)
+        }
+        val paired = selected?.let { BlePrefs.isPaired(ctx, it.second) } == true
+
+        val (text, color) = when (state) {
+            ConnectionState.Scanning ->
+                "Looking for your PowerTap nearby…" to R.color.primary_blue
+            ConnectionState.Connecting ->
+                "Found it — pairing now…" to R.color.primary_blue
+            ConnectionState.Connected ->
+                "Connected over Bluetooth" to R.color.status_success
+            ConnectionState.Failed ->
+                "Couldn't find the charger. Make sure it's on and nearby, then tap it again." to
+                    R.color.status_error
+            ConnectionState.Disconnected -> when {
+                selected == null ->
+                    "Tap the menu and choose a PowerTap to pair." to R.color.text_secondary
+                paired ->
+                    "Tap your PowerTap to reconnect." to R.color.text_secondary
+                else ->
+                    "Tap your PowerTap to pair. Keep the charger on and nearby." to
+                        R.color.status_warning
+            }
+        }
+        status.text = text
+        status.setTextColor(ctx.getColor(color))
+        updateOnlineStatus()
     }
 
     private fun showAddDeviceMenu(anchor: View) {
@@ -560,16 +816,9 @@ class HomeFragment : Fragment() {
                     return@setOnClickListener
                 }
 
-                if (!GatewayManager.connectFromQr(qr)) {
-                    Toast.makeText(ctx, "Please turn on Bluetooth to connect", Toast.LENGTH_LONG).show()
-                    return@setOnClickListener
-                }
-
-                Toast.makeText(ctx, "Connecting to ${qr.displayName}", Toast.LENGTH_SHORT).show()
-                deviceId = qr.deviceId
+                pairAndConnect(qr.bleAddress, qr.deviceId, qr.displayName)
                 setupDeviceSelector()
                 updateDeviceSelectorText(qr.deviceId)
-                setupFirebaseListener()
                 dialog.dismiss()
             }
         }
@@ -614,14 +863,13 @@ class HomeFragment : Fragment() {
         val isCharging = currentState == DeviceState.STATE_CHARGING || currentState == DeviceState.STATE_STARTED || currentState == DeviceState.STATE_STARTING
         
         val voltageStr = String.format(Locale.getDefault(), "%.1fV", data.voltage)
-        val energyStr = String.format(Locale.getDefault(), "%.3fkWh", data.energy)
+        val energyStr = String.format(Locale.getDefault(), "%.1fkWh", data.energy)
         val dateFormat = SimpleDateFormat("dd MMM hh:mm a", Locale.getDefault())
         val dateStr = dateFormat.format(Date()).uppercase()
 
         if (isCharging) {
-            val currentStr = String.format(Locale.getDefault(), "%.2fA", data.current)
-            val powerStr = if (data.power < 10) String.format(Locale.getDefault(), "%.2fW", data.power) 
-                           else String.format(Locale.getDefault(), "%.1fW", data.power)
+            val currentStr = String.format(Locale.getDefault(), "%.1fA", data.current)
+            val powerStr = String.format(Locale.getDefault(), "%.1fW", data.power)
             
             lcdView?.setText(
                 listOf(
@@ -700,14 +948,15 @@ class HomeFragment : Fragment() {
                     }
                 }
             } else {
-                if (sb.isActive) {
-                    sb.activate(false)
-                    sb.setText("Device is Offline")
-                }
                 bd?.visibility = View.GONE
-                
-                // If offline, maybe we should also clear commandStartTime?
-                // commandStartTime = 0 
+                val bleState = GatewayManager.bleTransport.connectionState.value
+                val pairing = isPairingFromHome ||
+                    bleState == ConnectionState.Scanning ||
+                    bleState == ConnectionState.Connecting
+                sb.activate(false)
+                sb.setText(
+                    if (pairing) "Pairing with PowerTap…" else "Device is Offline",
+                )
             }
         }
     }
