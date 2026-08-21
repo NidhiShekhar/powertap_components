@@ -9,9 +9,16 @@ import com.drivool.iot.powertap.mqtt.MqttPrefs
 import com.drivool.iot.powertap.mqtt.MqttTransport
 import com.drivool.iot.powertap.contract.MeterData
 import com.drivool.iot.powertap.contract.ChargingSession
+import com.drivool.iot.powertap.session.BleConnectionPolicy
+import com.drivool.iot.powertap.session.HardwareSession
+import com.drivool.iot.powertap.session.RetransmitFilter
+import com.drivool.iot.powertap.session.SessionLeaseStore
+import com.drivool.iot.powertap.session.SessionReconciler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -47,8 +54,8 @@ object GatewayManager {
 
     /**
      * Last CallResult (type-3 ACK) from the charger.
-     * Firmware replies `[3,"<msgId>",{"status":"Accepted"}]` immediately on RemoteStart/Stop,
-     * then later sends `StartTransaction` / `StopTransaction` when the relay actually switches.
+     * UX only: firmware replies `[3,"<msgId>",{"status":"Accepted"}]` immediately.
+     * A billed session is committed only when Firebase `PowerTapMonitor/{id}/state` changes.
      */
     private val _commandAck = MutableStateFlow<CommandAck?>(null)
     val commandAck: StateFlow<CommandAck?> = _commandAck.asStateFlow()
@@ -56,12 +63,53 @@ object GatewayManager {
     private val _chargingStartedAt = MutableStateFlow<Long?>(null)
     val chargingStartedAt: StateFlow<Long?> = _chargingStartedAt.asStateFlow()
 
+    /**
+     * What the charger itself last said about its relay and transaction id.
+     * This is the authority for whether a session is running — cloud state and
+     * heartbeat age only corroborate it.
+     */
+    private val _hardwareSession = MutableStateFlow<HardwareSession>(HardwareSession.Unknown)
+    val hardwareSession: StateFlow<HardwareSession> = _hardwareSession.asStateFlow()
+
     /** True when the user tapped Disconnect this process — skip auto-reconnect until they pick a device. */
     var userRequestedDisconnect: Boolean = false
         private set
 
+    /**
+     * Last deliberate user interaction with the charger. Drives the courtesy
+     * release so a forgotten connection does not keep the PowerTap occupied.
+     */
+    private var lastUserActionAt = 0L
+
+    /**
+     * Timestamp of the last courtesy release, so Home can explain it once.
+     *
+     * Cleared by [acknowledgeIdleRelease] as soon as it has been shown. Home is
+     * rebuilt from scratch on every navigation, and a StateFlow replays its
+     * current value to each new collector, so anything left here comes back as
+     * if it had just happened.
+     */
+    private val _idleReleased = MutableStateFlow(0L)
+    val idleReleased: StateFlow<Long> = _idleReleased.asStateFlow()
+
+    /** The user has been told about the release; do not tell them again. */
+    fun acknowledgeIdleRelease() {
+        _idleReleased.value = 0L
+    }
+
+    private val _isReconnecting = MutableStateFlow(false)
+    val isReconnecting: StateFlow<Boolean> = _isReconnecting.asStateFlow()
+
+    private var reconnectJob: Job? = null
+    private var reconnectAttempt = 0
+    private var pendingChargerCommand: String? = null
+    private var lastForwardedMqtt: String? = null
+    private var lastForwardedMqttAt = 0L
+
     private var lastCommandMsgId: String? = null
     private var lastCommandAction: String? = null
+
+    private val retransmits = RetransmitFilter()
 
     private var context: Context? = null
 
@@ -86,6 +134,8 @@ object GatewayManager {
      * @param scanFirst true = scan until this MAC is advertised, then GATT connect
      *                  (required from Home / QR). false = connect immediately because
      *                  we already have a fresh scan result (Add Device list).
+     * @param userInitiated true when a tap caused this. Resuming an owned session
+     *                  passes false so it cannot postpone the courtesy release.
      * @return false if Bluetooth is unavailable/disabled
      */
     fun connectToBle(
@@ -93,6 +143,7 @@ object GatewayManager {
         deviceId: String? = null,
         displayName: String? = null,
         scanFirst: Boolean = true,
+        userInitiated: Boolean = true,
     ): Boolean {
         val ctx = context ?: return false
         val adapter = (ctx.getSystemService(Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager)?.adapter
@@ -102,6 +153,8 @@ object GatewayManager {
         }
 
         userRequestedDisconnect = false
+        if (userInitiated) noteUserAction()
+        reconnectJob?.cancel()
 
         val resolvedId = deviceId?.takeIf { it.isNotBlank() }
             ?: DeviceIdentity.deviceIdFromBle(bleAddress)
@@ -119,11 +172,17 @@ object GatewayManager {
         val name = displayName ?: if (resolvedId.length == 12) "PowerTap_$resolvedId" else null
         BlePrefs.saveLastDevice(ctx, bleAddress, name)
 
+        val current = bleTransport.connectedAddress.value
+        val state = bleTransport.connectionState.value
+        if (ChargeSessionLogic.shouldSkipDuplicateConnect(state, current, bleAddress)) {
+            LogRepository.append("Gateway: Already on $bleAddress ($state) — not tearing GATT down")
+            return true
+        }
+
         LogRepository.append(
             "Gateway: BLE connect → $bleAddress, deviceId $resolvedId, scanFirst=$scanFirst",
         )
 
-        val current = bleTransport.connectedAddress.value
         if (current != null && !current.equals(bleAddress, ignoreCase = true)) {
             bleTransport.disconnect()
         }
@@ -148,44 +207,152 @@ object GatewayManager {
 
     fun markUserDisconnect() {
         userRequestedDisconnect = true
+        noteUserAction()
+        reconnectJob?.cancel()
+        _isReconnecting.value = false
+        pendingChargerCommand = null
         _bleTransport?.disconnect()
-        LogRepository.append("Gateway: User disconnected BLE — auto-connect paused for this session")
+        LogRepository.append("Gateway: User disconnected BLE — will not reconnect until asked")
+    }
+
+    /** Record deliberate interaction so the idle release timer restarts. */
+    fun noteUserAction() {
+        lastUserActionAt = System.currentTimeMillis()
     }
 
     /**
-     * Reconnect the last PowerTap on app open (or when Bluetooth turns back on).
-     * Skipped if the user explicitly disconnected this session.
+     * Hand the charger back so another driver can see and use it.
+     *
+     * The firmware stops advertising while a phone is connected, so this is what
+     * actually un-occupies the PowerTap. Unlike [markUserDisconnect] this does
+     * not block a later session resume — it just ends the current link.
      */
-    fun tryAutoConnect(): Boolean {
+    fun releaseLink(reason: String) {
+        reconnectJob?.cancel()
+        _isReconnecting.value = false
+        pendingChargerCommand = null
+        _hardwareSession.value = HardwareSession.Unknown
+        _bleTransport?.disconnect()
+        LogRepository.append("Gateway: Released BLE link — $reason")
+    }
+
+    /**
+     * Reconnect on app open or when Bluetooth returns — but only to resume a
+     * session this phone owns.
+     *
+     * This used to fire for any previously seen charger, which meant a phone in
+     * range silently connected, stopped the charger advertising, and made it
+     * invisible to the next driver.
+     */
+    fun resumeSessionLink(): Boolean {
         val ctx = context ?: return false
-        if (userRequestedDisconnect) {
-            LogRepository.append("Gateway: Auto-connect skipped — user disconnected")
+        val lease = SessionLeaseStore.open
+        val state = _bleTransport?.connectionState?.value ?: return false
+
+        if (!BleConnectionPolicy.shouldResumeLink(
+                hasOpenLease = lease != null && BlePrefs.isSessionResumeEnabled(ctx),
+                userRequestedDisconnect = userRequestedDisconnect,
+                state = state,
+            )
+        ) {
+            if (lease == null && !BleConnectionPolicy.isLinkBusy(state)) {
+                LogRepository.append("Gateway: No session to resume — staying disconnected")
+            }
+            return BleConnectionPolicy.isLinkBusy(state)
+        }
+
+        val address = lease!!.bleAddress.takeIf { it.isNotBlank() }
+            ?: BlePrefs.getLastDeviceAddress(ctx)
+            ?: return false
+        val known = BlePrefs.getKnownDevices(ctx).firstOrNull { (_, addr) ->
+            addr.equals(address, ignoreCase = true)
+        }
+        LogRepository.append(
+            "Gateway: Resuming session ${lease.transactionId} — reconnecting to $address",
+        )
+        return connectToBle(
+            address,
+            deviceId = lease.deviceId.takeIf { it.isNotBlank() },
+            displayName = known?.first,
+            scanFirst = true,
+            userInitiated = false,
+        )
+    }
+
+    /**
+     * Write to the charger over BLE. If GATT is down, queue the payload and
+     * start reconnecting so a mid-session RemoteStop is not dropped.
+     */
+    fun sendToCharger(payload: String): Boolean {
+        val transport = _bleTransport
+        if (transport != null && ChargeSessionLogic.isBleReady(transport.connectionState.value)) {
+            val ok = transport.send(payload)
+            if (ok) {
+                pendingChargerCommand = null
+                return true
+            }
+            LogRepository.append("Gateway: BLE write failed on Connected GATT — dropping link to reconnect")
+            pendingChargerCommand = payload
+            transport.disconnect()
             return false
         }
-        if (!BlePrefs.isAutoConnectEnabled(ctx)) return false
-        val lastAddr = BlePrefs.getLastDeviceAddress(ctx) ?: return false
-        val state = _bleTransport?.connectionState?.value ?: return false
-        if (state == ConnectionState.Connected ||
-            state == ConnectionState.Connecting ||
-            state == ConnectionState.Scanning
-        ) {
-            return true
+        pendingChargerCommand = payload
+        LogRepository.append("Gateway: BLE not ready — queued command, reconnecting")
+        if (!userRequestedDisconnect) {
+            scheduleReconnect(immediate = true)
         }
-        val known = BlePrefs.getKnownDevices(ctx).firstOrNull { (_, addr) ->
-            addr.equals(lastAddr, ignoreCase = true)
+        return false
+    }
+
+    private fun flushPendingCommand() {
+        val payload = pendingChargerCommand ?: return
+        val transport = _bleTransport ?: return
+        if (!ChargeSessionLogic.isBleReady(transport.connectionState.value)) return
+        if (transport.send(payload)) {
+            LogRepository.append("Gateway: Flushed queued command after reconnect")
+            pendingChargerCommand = null
         }
-        LogRepository.append("Gateway: Auto-connecting BLE to $lastAddr...")
-        return connectToBle(lastAddr, displayName = known?.first, scanFirst = true)
+    }
+
+    /**
+     * Retry the link after a drop. Gated on owning a session: losing Bluetooth
+     * mid-charge must not cost the user the ability to stop, but a dropped idle
+     * link is left alone so the charger stays available to others.
+     */
+    private fun scheduleReconnect(immediate: Boolean = false) {
+        if (userRequestedDisconnect) return
+        val state = _bleTransport?.connectionState?.value ?: return
+        if (BleConnectionPolicy.isLinkBusy(state)) return
+        if (!SessionLeaseStore.hasOpenLease) {
+            LogRepository.append("Gateway: Not reconnecting — no session owned by this phone")
+            _isReconnecting.value = false
+            return
+        }
+        reconnectJob?.cancel()
+        _isReconnecting.value = true
+        val delayMs = if (immediate) 400L else ChargeSessionLogic.reconnectDelayMs(reconnectAttempt)
+        reconnectAttempt = (reconnectAttempt + 1).coerceAtMost(8)
+        reconnectJob = scope.launch {
+            delay(delayMs)
+            if (userRequestedDisconnect) return@launch
+            LogRepository.append("Gateway: Session reconnect attempt $reconnectAttempt")
+            resumeSessionLink()
+        }
     }
 
     fun init(context: Context) {
         this.context = context.applicationContext
         TransactionRepository.init(context.applicationContext)
+        SessionLeaseStore.init(context.applicationContext)
         if (_bleTransport == null) {
             _bleTransport = BleTransport(context.applicationContext, log = LogRepository::append)
             setupBridge()
 
-            tryAutoConnect()
+            // Only reconnects if a session survived the app being killed.
+            SessionLeaseStore.open?.let {
+                LogRepository.append("Gateway: Found saved session ${it.transactionId} (${it.state})")
+            }
+            resumeSessionLink()
             
             // Auto-connect MQTT if config exists
             val config = MqttPrefs.load(context)
@@ -216,7 +383,7 @@ object GatewayManager {
             // during relay switching / brief packet gaps.
             scope.launch {
                 while (true) {
-                    kotlinx.coroutines.delay(5000)
+                    delay(5000)
                     val bleConnected = _bleTransport?.connectionState?.value == ConnectionState.Connected
                     if (bleConnected) {
                         if (!_isDeviceOnline.value) _isDeviceOnline.value = true
@@ -229,23 +396,80 @@ object GatewayManager {
                     }
                 }
             }
+
+            // Charger evidence expires. Going to Unknown is deliberately *not*
+            // the same as going idle: an unreachable charger tells us nothing
+            // about whether it is still charging.
+            scope.launch {
+                while (true) {
+                    delay(5_000)
+                    val observed = _hardwareSession.value.observedAtOrZero
+                    if (observed <= 0L) continue
+                    if (System.currentTimeMillis() - observed > HardwareSession.STALE_AFTER_MS) {
+                        LogRepository.append("Gateway: Charger evidence stale — hardware state unknown")
+                        _hardwareSession.value = HardwareSession.Unknown
+                    }
+                }
+            }
+
+            // Courtesy release: a connected phone makes the charger invisible to
+            // everyone else, so an idle link is given back automatically.
+            scope.launch {
+                while (true) {
+                    delay(5_000)
+                    val state = _bleTransport?.connectionState?.value ?: continue
+                    if (BleConnectionPolicy.shouldReleaseIdleLink(
+                            state = state,
+                            hasOpenLease = SessionLeaseStore.hasOpenLease,
+                            lastUserActionAtMs = lastUserActionAt,
+                            nowMs = System.currentTimeMillis(),
+                        )
+                    ) {
+                        lastUserActionAt = 0L
+                        _idleReleased.value = System.currentTimeMillis()
+                        releaseLink("idle for ${BleConnectionPolicy.IDLE_RELEASE_MS / 1000}s with no session")
+                    }
+                }
+            }
         }
     }
 
     private fun setupBridge() {
         scope.launch {
             bleTransport.connectionState.collect { state ->
-                if (state == ConnectionState.Connected) {
-                    val address = bleTransport.connectedAddress.value
-                    if (address != null) {
-                        LogRepository.append("Bridge: BLE Connected ($address)")
-                        lastHeartbeatTime = System.currentTimeMillis()
-                        _isDeviceOnline.value = true
-                        
-                        // Save for auto-connect
-                        val discoveredName = bleTransport.discoveredDevices.value
-                            .find { it.address == address }?.name
-                        val ctx = context!!
+                if (state == ConnectionState.Disconnected || state == ConnectionState.Failed) {
+                    // Link is gone, so we no longer know what the charger is doing.
+                    _hardwareSession.value = HardwareSession.Unknown
+                }
+                if (BleConnectionPolicy.shouldReconnectAfterDrop(
+                        hasOpenLease = SessionLeaseStore.hasOpenLease,
+                        userRequestedDisconnect = userRequestedDisconnect,
+                        state = state,
+                    )
+                ) {
+                    LogRepository.append("Bridge: BLE $state during owned session — scheduling reconnect")
+                    scheduleReconnect()
+                    return@collect
+                }
+                if (state != ConnectionState.Connected) {
+                    _isReconnecting.value = false
+                    return@collect
+                }
+
+                reconnectAttempt = 0
+                reconnectJob?.cancel()
+                _isReconnecting.value = false
+                val address = bleTransport.connectedAddress.value
+                if (address != null) {
+                    LogRepository.append("Bridge: BLE Connected ($address)")
+                    lastHeartbeatTime = System.currentTimeMillis()
+                    _isDeviceOnline.value = true
+                    flushPendingCommand()
+
+                    // Save for auto-connect
+                    val discoveredName = bleTransport.discoveredDevices.value
+                        .find { it.address == address }?.name
+                    val ctx = context!!
 
                         // Prefer QR / explicit device ID over MAC guessing.
                         // ESP32 BLE MAC is often Base MAC (deviceId) + 1.
@@ -287,13 +511,11 @@ object GatewayManager {
                         _mqttTransport.connect(config, deviceId)
                         MqttPrefs.save(ctx, config, deviceId)
                     }
-                }
             }
         }
 
         scope.launch {
             bleTransport.incoming.collect { payload ->
-                LogRepository.append("Gateway: Received BLE packet, marking online")
                 lastHeartbeatTime = System.currentTimeMillis()
                 if (!_isDeviceOnline.value) {
                     LogRepository.append("Gateway: Device ${_currentDeviceId.value} is ONLINE via BLE")
@@ -302,7 +524,9 @@ object GatewayManager {
 
                 if (_isBridgeEnabled.value) {
                     val trimmed = payload.trim()
-                    LogRepository.append("Bridge: BLE -> MQTT: $trimmed")
+                    if (!ChargeSessionLogic.isHighFrequencyPacket(trimmed)) {
+                        LogRepository.append("Bridge: BLE -> MQTT: $trimmed")
+                    }
                     
                     // Auto-detection of Device ID from Packet Footer
                     try {
@@ -353,13 +577,25 @@ object GatewayManager {
 
         scope.launch {
             _mqttTransport.incoming.collect { incoming ->
-                if (_isBridgeEnabled.value) {
-                    LogRepository.append("Bridge: MQTT -> BLE: ${incoming.payload}")
-                    handleOcppPacket(incoming.payload)
-                    // Forward directly to BLE without throttle as firmware handles duplicates now
-                    if (!bleTransport.send(incoming.payload)) {
-                        LogRepository.append("Error: Failed to send MQTT message to BLE")
-                    }
+                if (!_isBridgeEnabled.value) return@collect
+                handleOcppPacket(incoming.payload)
+                // Commands plus CSMS CallResults (BootNotification/Heartbeat ACK).
+                // Do not echo MeterValues — that saturates GATT.
+                if (!ChargeSessionLogic.mqttShouldForwardToBle(incoming.payload)) return@collect
+                val now = System.currentTimeMillis()
+                if (ChargeSessionLogic.isDuplicateMqttForward(
+                        incoming.payload, lastForwardedMqtt, lastForwardedMqttAt, now,
+                    )
+                ) {
+                    LogRepository.append("Bridge: skip duplicate MQTT->BLE")
+                    return@collect
+                }
+                lastForwardedMqtt = incoming.payload
+                lastForwardedMqttAt = now
+                LogRepository.append("Bridge: MQTT -> BLE: ${incoming.payload}")
+                if (!bleTransport.send(incoming.payload)) {
+                    LogRepository.append("Error: Failed to send MQTT command to BLE")
+                    pendingChargerCommand = incoming.payload
                 }
             }
         }
@@ -428,13 +664,35 @@ object GatewayManager {
         val payload = arr.optJSONObject(2) ?: return
         val status = payload.optString("status", "Unknown")
         val accepted = status.equals("Accepted", ignoreCase = true)
+        if (!ChargeSessionLogic.callResultMatchesCommand(msgId, lastCommandMsgId)) {
+            LogRepository.append("Gateway: Ignoring CallResult id=$msgId (not our RemoteStart/Stop)")
+            return
+        }
         val action = lastCommandAction
         LogRepository.append("Gateway: ACK $status for ${action ?: "command"} (id=$msgId)")
+
+        // A rejection that names the running session is the fastest way out of a
+        // dangling-session standoff. It travels on the ack rather than a separate
+        // flow so one collector decides what to do: with two, whichever resumed
+        // first decided whether the session got repaired.
+        val activeTid = if (accepted) {
+            null
+        } else {
+            payload.optString("activeTid").trim().takeIf { it.isNotBlank() }
+        }
+        if (activeTid != null) {
+            LogRepository.append("Gateway: Charger is running tid=$activeTid")
+            _hardwareSession.value = HardwareSession.Charging(
+                activeTid,
+                System.currentTimeMillis(),
+            )
+        }
         _commandAck.value = CommandAck(
             messageId = msgId,
             accepted = accepted,
             status = status,
             action = action,
+            activeTid = activeTid,
         )
         if (!accepted) {
             if (action == "RemoteStart") {
@@ -446,10 +704,71 @@ object GatewayManager {
         }
     }
 
+    /** The charger quotes its message id as a string on some frames, a number on others. */
+    private fun frameMessageId(arr: JSONArray): String = when (val raw = arr.opt(1)) {
+        is Number -> raw.toLong().toString()
+        else -> arr.optString(1)
+    }
+
+    /**
+     * Record what the charger just told us about its own relay. Works for frames
+     * arriving over BLE or MQTT, so a charger on Wi-Fi is just as observable as
+     * one the phone is bridging.
+     *
+     * A frame we have already counted is dropped rather than re-timestamped: the
+     * charger re-sends unacknowledged frames verbatim, and treating a retry as a
+     * fresh reading is what let a heartbeat queued before Start close the session
+     * it was supposed to precede.
+     */
+    private fun recordHardwareEvidence(arr: JSONArray) {
+        val action = arr.optString(2)
+        if (action == "BootNotification") {
+            // The charger restarted, so its message counter did too and every id
+            // we remember is about to be handed out again.
+            retransmits.reset()
+        }
+        val data = arr.optJSONObject(3) ?: return
+        val observed = HardwareSession.fromAction(
+            action = action,
+            transactionId = data.optString("transactionId").trim(),
+            status = data.optString("status"),
+            observedAt = System.currentTimeMillis(),
+        ) ?: return
+        if (!retransmits.accept(messageId = frameMessageId(arr), action = action)) return
+
+        val previous = _hardwareSession.value
+        val now = System.currentTimeMillis()
+        // Heartbeat/StatusNotification idle right after StartTransaction is often a
+        // queued frame or a low-current settle reading (c≈0 while the relay closes).
+        // Treating it as proof the session ended is what showed "Charging finished"
+        // / disconnected the phone a second after Start. StopTransaction is definite.
+        if (observed is HardwareSession.Idle &&
+            previous is HardwareSession.Charging &&
+            action != "StopTransaction" &&
+            now - previous.observedAt < SessionReconciler.START_GRACE_MS
+        ) {
+            LogRepository.append(
+                "Gateway: Ignoring $action idle — StartTransaction was ${now - previous.observedAt}ms ago",
+            )
+            return
+        }
+
+        _hardwareSession.value = observed
+        val changed = when {
+            previous is HardwareSession.Charging && observed is HardwareSession.Charging ->
+                previous.transactionId != observed.transactionId
+            else -> previous::class != observed::class
+        }
+        if (changed) {
+            LogRepository.append("Gateway: Charger reports $observed")
+        }
+    }
+
     private fun handleOcppPacket(payload: String) {
         try {
             val arr = JSONArray(payload)
             if (arr.length() < 3) return
+            recordHardwareEvidence(arr)
             val frameType = when (val raw = arr.opt(0)) {
                 is Number -> raw.toInt()
                 else -> arr.optString(0).toIntOrNull() ?: -1
@@ -491,8 +810,10 @@ object GatewayManager {
                     )
                     sessionMeterData[tid] = mutableListOf()
                     _chargingStartedAt.value = startedAt
+                    // Hardware hint only — Home must not treat this as a billed session.
+                    // Firebase PowerTapMonitor.state is the source of truth for CHARGING.
                     _bridgeDetectedState.value = DeviceState.STATE_CHARGING
-                    LogRepository.append("Gateway: StartTransaction tid=$tid — charging confirmed")
+                    LogRepository.append("Gateway: StartTransaction tid=$tid — hardware started, waiting for server state")
                 }
                 "StopTransaction" -> {
                     val tid = data.getString("transactionId")
@@ -506,11 +827,37 @@ object GatewayManager {
                     
                     _chargingStartedAt.value = null
                     _bridgeDetectedState.value = DeviceState.STATE_AVAILABLE
-                    LogRepository.append("Gateway: StopTransaction tid=$tid — charging stopped")
+                    LogRepository.append("Gateway: StopTransaction tid=$tid — hardware stopped, waiting for server state")
+                }
+                "Heartbeat", "HeartBeat" -> {
+                    val currentMilli = data.optDouble("c", 0.0)
+                    val powerMilli = data.optDouble("p", 0.0)
+                    // After a power-cycle the charger boots idle and only heartbeats.
+                    // Cloud can still say CHARGING; hardware wins here.
+                    // Do not flip AVAILABLE over a settle-window heartbeat while we
+                    // still hold Charging evidence — that raced finishSession on start.
+                    val charging = _hardwareSession.value as? HardwareSession.Charging
+                    val settleMs = charging?.let { System.currentTimeMillis() - it.observedAt }
+                    if (currentMilli < 300.0 && powerMilli < 50_000.0 &&
+                        (settleMs == null || settleMs >= SessionReconciler.START_GRACE_MS)
+                    ) {
+                        _chargingStartedAt.value = null
+                        _bridgeDetectedState.value = DeviceState.STATE_AVAILABLE
+                    }
+                }
+                "StatusNotification" -> {
+                    val status = data.optString("status")
+                    if (status.equals("Available", ignoreCase = true) ||
+                        status.equals("Finishing", ignoreCase = true)
+                    ) {
+                        _chargingStartedAt.value = null
+                        _bridgeDetectedState.value = DeviceState.STATE_AVAILABLE
+                    }
                 }
                 "MeterValues" -> {
                     val tid = data.optString("transactionId")
                     if (tid.isNotEmpty()) {
+                        _bridgeDetectedState.value = DeviceState.STATE_CHARGING
                         val mv = data.optJSONObject("meterValue")
                         val mCurrent = mv?.optDouble("e")?.toFloat() ?: 0f
                         TransactionRepository.addMeterValue(tid, mCurrent)
@@ -533,6 +880,12 @@ object GatewayManager {
         _isBridgeEnabled.value = enabled
         LogRepository.append("Bridge ${if (enabled) "ENABLED" else "DISABLED"}")
     }
+
+    /** Snapshot of meter samples collected for the live charging session. */
+    fun sessionMeterSamples(transactionId: String?): List<MeterData> {
+        if (transactionId.isNullOrEmpty()) return emptyList()
+        return sessionMeterData[transactionId]?.toList().orEmpty()
+    }
 }
 
 data class CommandAck(
@@ -540,5 +893,11 @@ data class CommandAck(
     val accepted: Boolean,
     val status: String,
     val action: String?,
+    /**
+     * Set when the charger rejected the command and named the session it is
+     * really running, which lets the caller take that session over instead of
+     * leaving it with no owner.
+     */
+    val activeTid: String? = null,
     val timestamp: Long = System.currentTimeMillis(),
 )

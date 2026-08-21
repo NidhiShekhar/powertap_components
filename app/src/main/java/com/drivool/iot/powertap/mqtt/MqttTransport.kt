@@ -38,6 +38,10 @@ class MqttTransport(
     private var client: MqttAsyncClient? = null
     private var subscribedDeviceId: String? = null
 
+    private var lastConfig: MqttConfig? = null
+    private var lastDeviceId: String? = null
+    private var reconnecting = false
+
     fun connect(config: MqttConfig, deviceId: String? = null) {
         val id = deviceId?.trim()?.lowercase()
         if (id != null && (id.length != 12 || !id.all { it in '0'..'9' || it in 'a'..'f' })) {
@@ -50,6 +54,14 @@ class MqttTransport(
             _connectionState.value = ConnectionState.Failed
             return
         }
+        val existing = client
+        if (existing != null && existing.isConnected && lastDeviceId == id && lastConfig?.brokerUri == config.brokerUri) {
+            log("MQTT already connected to ${config.brokerUri}")
+            return
+        }
+
+        lastConfig = config
+        lastDeviceId = id
 
         scope.launch {
             disconnectInternal()
@@ -160,9 +172,24 @@ class MqttTransport(
 
     private val mqttCallback = object : MqttCallback {
         override fun connectionLost(cause: Throwable?) {
+            log("MQTT connection lost: ${cause?.message}")
             client = null
             subscribedDeviceId = null
             _connectionState.value = ConnectionState.Disconnected
+            val cfg = lastConfig
+            val id = lastDeviceId
+            if (cfg != null && !reconnecting) {
+                reconnecting = true
+                scope.launch {
+                    try {
+                        kotlinx.coroutines.delay(1_000)
+                        reconnecting = false
+                        connect(cfg, id)
+                    } catch (_: Exception) {
+                        reconnecting = false
+                    }
+                }
+            }
         }
 
         override fun messageArrived(topic: String, message: MqttMessage) {

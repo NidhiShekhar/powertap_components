@@ -17,6 +17,7 @@ data class DiscoveredDevice(
     val name: String?,
     val address: String,
     val rssi: Int,
+    val lastSeenElapsedMs: Long = 0L,
 ) {
     val displayName: String get() = name ?: "(unknown)"
 }

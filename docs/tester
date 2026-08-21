@@ -1,0 +1,13 @@
+when you connect and leave the charger without charging:
+dialog says "disconnected to free charger... you werent charging so we let go........"
+
+change the final dialog box after charging is complete to be more concise and less berbose for the user.
+
+
+there is another bug where i disconnected the device and the charging has stopped but the app still shows me the orange slider asking me to "slide to stop". this is after the charging was complete and i can see that my phone isnt connected to the powertap device and even the box on top of the home page shows "not connected" and the connect button is active, but my app slider button still shows "slide to stop"
+
+
+i also got a random dialog box telling me i wasnt charging and thus they disconnected me from the powertap to let other usres charge, while the charging was going on from my phone and the ui also reflected the charging was going on. all i did was change pages to go see the charging history page and when i came back i got that error. changing pages shouldnt disconnect me if im charging and i shouldnt get such a dialog box by simply changing pages on the app
+
+
+the duration in the charging histroy card is currently rounded very heavily, i want it in minutes and seconds

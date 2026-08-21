@@ -100,9 +100,14 @@ class HistoryFragment : Fragment() {
                     txtTimeEnd.text = "Stopped: ${timeFormat.format(Date(session.stopTime!!))}"
                     
                     val durationMillis = session.stopTime!! - session.startTime
-                    val minutes = (durationMillis / (1000 * 60)) % 60
-                    val hours = (durationMillis / (1000 * 60 * 60))
-                    txtDuration.text = if (hours > 0) "${hours}h ${minutes}m" else "${minutes}m"
+                    val totalSeconds = (durationMillis / 1000).coerceAtLeast(0)
+                    val hours = totalSeconds / 3600
+                    val minutes = (totalSeconds % 3600) / 60
+                    val seconds = totalSeconds % 60
+                    txtDuration.text = when {
+                        hours > 0 -> "${hours}h ${minutes}m ${seconds}s"
+                        else -> "${minutes}m ${seconds}s"
+                    }
                 } else {
                     txtTimeEnd.text = "Stopped: ---"
                     txtDuration.text = "Charging..."
@@ -113,7 +118,7 @@ class HistoryFragment : Fragment() {
 
                 val openChart = View.OnClickListener {
                     val intent = Intent(it.context, ChartActivity::class.java).apply {
-                        putExtra("TRANSACTION_ID", session.transactionId)
+                        putExtra(ChartActivity.EXTRA_TRANSACTION_ID, session.transactionId)
                     }
                     it.context.startActivity(intent)
                 }

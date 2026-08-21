@@ -3,6 +3,8 @@ package com.drivool.iot.powertap
 import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.*
+import android.text.TextPaint
+import android.text.TextUtils
 import android.util.AttributeSet
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
@@ -18,7 +20,7 @@ class SliderButtonView @JvmOverloads constructor(
 
     private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val handlePaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG)
 
     private var handleRadius = 0f
     private var handleX = -1f
@@ -35,6 +37,13 @@ class SliderButtonView @JvmOverloads constructor(
     var onSlideRight: (() -> Unit)? = null
     var onSlideLeft: (() -> Unit)? = null
 
+    /**
+     * Tapped while deactivated. People tap the disabled control rather than read
+     * why it is disabled, so the host can use this to offer the fix instead of
+     * swallowing the gesture.
+     */
+    var onBlockedTap: (() -> Unit)? = null
+
     private var animator: ValueAnimator? = null
 
     init {
@@ -48,14 +57,18 @@ class SliderButtonView @JvmOverloads constructor(
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
-        handleRadius = h / 2f - 6f
+        handleRadius = h / 2f - HANDLE_INSET
         // Set initial position without animation
-        handleX = if (currentState == "LEFT") handleRadius + 6f else width - handleRadius - 6f
+        handleX = restingHandleX()
     }
+
+    private fun restingHandleX(): Float =
+        if (currentState == "LEFT") handleRadius + HANDLE_INSET else width - handleRadius - HANDLE_INSET
 
     private fun updateHandlePosition(animated: Boolean) {
         if (width == 0) return
-        val targetX = if (currentState == "LEFT") handleRadius + 6f else width - handleRadius - 6f
+        val targetX = restingHandleX()
+
         
         if (animated) {
             animator?.cancel()
@@ -80,8 +93,8 @@ class SliderButtonView @JvmOverloads constructor(
 
         // Safety check for handleX
         if (handleX == -1f) {
-            handleRadius = height / 2f - 6f
-            handleX = if (currentState == "LEFT") handleRadius + 6f else width - handleRadius - 6f
+            handleRadius = height / 2f - HANDLE_INSET
+            handleX = restingHandleX()
         }
 
         val grooveRect = RectF(0f, 0f, width.toFloat(), height.toFloat())
@@ -100,13 +113,7 @@ class SliderButtonView @JvmOverloads constructor(
         val corner = height / 2f
         canvas.drawRoundRect(grooveRect, corner, corner, bgPaint)
 
-        // Draw text ALWAYS CENTERED in the middle of the button
-        textPaint.textSize = height * 0.25f
-        // Use a slight shadow for text readability
-        textPaint.setShadowLayer(2f, 1f, 1f, Color.parseColor("#44000000"))
-        
-        val textY = height / 2f - (textPaint.descent() + textPaint.ascent()) / 2
-        canvas.drawText(sliderText, width / 2f, textY, textPaint)
+        drawLabel(canvas)
 
         // Handle
         handlePaint.color = if (active && !locked) Color.WHITE else Color.parseColor("#DDDDDD")
@@ -140,8 +147,54 @@ class SliderButtonView @JvmOverloads constructor(
         canvas.restore()
     }
 
+    /**
+     * The handle covers one end of the track, so centring the label on the whole
+     * width leaves it crammed against the handle with all the slack on the far
+     * side. Centre it on the free part of the track instead, and shrink long
+     * labels ("Connect to start charging") so they fit that space.
+     */
+    private fun drawLabel(canvas: Canvas) {
+        textPaint.setShadowLayer(2f, 1f, 1f, Color.parseColor("#44000000"))
+
+        // Handle at rest, not the live position: sizing off a moving handle
+        // would make the label resize on every drag frame.
+        val restingSpan = HANDLE_INSET + handleRadius * 2f
+        val nearHandle = height * 0.10f
+        // The rounded cap eats into the far end, so keep clear of the curve.
+        val nearEdge = height * 0.30f
+
+        val left: Float
+        val right: Float
+        if (currentState == "LEFT") {
+            left = restingSpan + nearHandle
+            right = width - nearEdge
+        } else {
+            left = nearEdge
+            right = width - restingSpan - nearHandle
+        }
+        val available = right - left
+        if (available <= 0f) return
+
+        val preferredSize = height * 0.25f
+        textPaint.textSize = preferredSize
+        val measured = textPaint.measureText(sliderText)
+        if (measured > available) {
+            textPaint.textSize = max(height * 0.16f, preferredSize * available / measured)
+        }
+
+        val label = TextUtils.ellipsize(sliderText, textPaint, available, TextUtils.TruncateAt.END)
+        val textY = height / 2f - (textPaint.descent() + textPaint.ascent()) / 2
+        canvas.drawText(label, 0, label.length, (left + right) / 2f, textY, textPaint)
+    }
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (!active || locked) return false
+        if (!active) {
+            // Consume the gesture so ACTION_UP arrives and we can offer the fix.
+            // `locked` is left alone: that means our own command is in flight.
+            if (event.action == MotionEvent.ACTION_UP) onBlockedTap?.invoke()
+            return true
+        }
+        if (locked) return false
         
         when (event.action) {
             MotionEvent.ACTION_DOWN -> {
@@ -154,7 +207,10 @@ class SliderButtonView @JvmOverloads constructor(
             }
             MotionEvent.ACTION_MOVE -> {
                 if (dragging) {
-                    handleX = min(width - handleRadius - 6f, max(handleRadius + 6f, event.x))
+                    handleX = min(
+                        width - handleRadius - HANDLE_INSET,
+                        max(handleRadius + HANDLE_INSET, event.x),
+                    )
                     invalidate()
                 }
             }
@@ -218,5 +274,10 @@ class SliderButtonView @JvmOverloads constructor(
             sliderText = text
             invalidate()
         }
+    }
+
+    private companion object {
+        /** Gap between the handle and the groove edge, in pixels. */
+        const val HANDLE_INSET = 6f
     }
 }

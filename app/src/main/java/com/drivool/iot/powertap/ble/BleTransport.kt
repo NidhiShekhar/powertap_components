@@ -17,8 +17,12 @@ import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelUuid
+import android.os.SystemClock
 import androidx.core.app.ActivityCompat
+import com.drivool.iot.powertap.ChargeSessionLogic
 import com.drivool.iot.powertap.contract.ConnectionState
 import com.drivool.iot.powertap.contract.DeviceTransport
 import com.drivool.iot.powertap.contract.DiscoveredDevice
@@ -32,6 +36,11 @@ import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * BleTransport - a reusable BLE central that implements [DeviceTransport].
+ *
+ * Android delivers GATT callbacks on a binder thread, and a closed GATT can still
+ * fire Connected/Disconnected after we have started a newer connection. Every
+ * callback is therefore ignored unless it belongs to the current [gatt], and
+ * UI-facing StateFlows are always posted on the main thread.
  */
 class BleTransport(
     private val context: Context,
@@ -40,6 +49,8 @@ class BleTransport(
 
     private val adapter: BluetoothAdapter? =
         (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     private val _connectionState = MutableStateFlow(ConnectionState.Disconnected)
     override val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
@@ -60,6 +71,9 @@ class BleTransport(
     private var dataChar: BluetoothGattCharacteristic? = null
     private var scanning = false
     private var targetAddress: String? = null
+    private var connectGeneration = 0
+    private var waitingForCccd = false
+    private var scanGeneration = 0
 
     private fun has(permission: String): Boolean =
         ActivityCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
@@ -72,6 +86,22 @@ class BleTransport(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) has(Manifest.permission.BLUETOOTH_CONNECT)
         else true
 
+    private fun setState(state: ConnectionState) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            _connectionState.value = state
+        } else {
+            mainHandler.post { _connectionState.value = state }
+        }
+    }
+
+    private fun setConnectedAddress(address: String?) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            _connectedAddress.value = address
+        } else {
+            mainHandler.post { _connectedAddress.value = address }
+        }
+    }
+
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val device = result.device
@@ -81,7 +111,8 @@ class BleTransport(
             } else {
                 result.scanRecord?.deviceName
             }
-            val entry = DiscoveredDevice(advertisedName, rawAddress, result.rssi)
+            val now = SystemClock.elapsedRealtime()
+            val entry = DiscoveredDevice(advertisedName, rawAddress, result.rssi, now)
             val current = _discoveredDevices.value
             val idx = current.indexOfFirst {
                 it.address.equals(rawAddress, ignoreCase = true)
@@ -95,11 +126,20 @@ class BleTransport(
                     else -> previous.name ?: entry.name
                 }
                 current.toMutableList().also {
-                    it[idx] = previous.copy(name = bestName, rssi = entry.rssi, address = rawAddress)
+                    it[idx] = previous.copy(
+                        name = bestName,
+                        rssi = entry.rssi,
+                        address = rawAddress,
+                        lastSeenElapsedMs = now,
+                    )
                 }
             }
 
-            if (targetAddress != null && rawAddress.equals(targetAddress, ignoreCase = true)) {
+            val wanted = targetAddress
+            if (wanted != null && rawAddress.equals(wanted, ignoreCase = true)) {
+                // Clear the target first so the next advertisement cannot start a
+                // second connectGatt on top of this one.
+                targetAddress = null
                 log("Auto-connecting to target: $rawAddress")
                 connect(rawAddress)
             }
@@ -108,7 +148,7 @@ class BleTransport(
         override fun onScanFailed(errorCode: Int) {
             log("BLE scan failed (code=$errorCode)")
             scanning = false
-            _connectionState.value = ConnectionState.Failed
+            setState(ConnectionState.Failed)
         }
     }
 
@@ -128,21 +168,33 @@ class BleTransport(
             log("Missing scan permission")
             return
         }
-        // If we already saw this charger in a recent scan, skip another scan and
-        // GATT-connect immediately. Direct connect without any advertisement is
-        // what used to fail on Home for first-time users.
+        if (targetAddress != null &&
+            ChargeSessionLogic.shouldSkipDuplicateConnect(
+                _connectionState.value,
+                _connectedAddress.value,
+                targetAddress,
+            )
+        ) {
+            log("Scan skipped — already connected/connecting to $targetAddress")
+            return
+        }
+        // Direct connectGatt without a *fresh* advertisement is why reconnect
+        // after a mid-charge drop used to report Connected on a dead handle.
         if (targetAddress != null) {
-            val alreadySeen = _discoveredDevices.value.any {
+            val now = SystemClock.elapsedRealtime()
+            val cached = _discoveredDevices.value.firstOrNull {
                 it.address.equals(targetAddress, ignoreCase = true)
             }
-            if (alreadySeen) {
-                log("Target $targetAddress already advertised — connecting now")
+            if (cached != null &&
+                ChargeSessionLogic.isScanResultFresh(cached.lastSeenElapsedMs, now)
+            ) {
+                log("Target $targetAddress advertised ${now - cached.lastSeenElapsedMs}ms ago — connecting now")
                 connect(targetAddress)
                 return
             }
         }
-        _discoveredDevices.value = emptyList()
         this.targetAddress = targetAddress
+        val thisScan = ++scanGeneration
 
         val filters = listOf(
             ScanFilter.Builder().setServiceUuid(ParcelUuid(PtContract.SERVICE_UUID)).build(),
@@ -154,8 +206,16 @@ class BleTransport(
         try {
             scanner.startScan(filters, settings, scanCallback)
             scanning = true
-            _connectionState.value = ConnectionState.Scanning
+            setState(ConnectionState.Scanning)
             log("Scanning for ${PtContract.DEVICE_NAME}...")
+            mainHandler.postDelayed({
+                if (thisScan != scanGeneration) return@postDelayed
+                if (scanning && _connectionState.value == ConnectionState.Scanning) {
+                    log("Scan timed out for ${targetAddress ?: "any"}")
+                    stopScan()
+                    setState(ConnectionState.Failed)
+                }
+            }, 20_000)
         } catch (e: SecurityException) {
             log("Scan blocked: ${e.message}")
         }
@@ -169,9 +229,14 @@ class BleTransport(
         } catch (e: SecurityException) { }
         scanning = false
         targetAddress = null
+        scanGeneration++
     }
 
     override fun connect(address: String) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { connect(address) }
+            return
+        }
         val device = try {
             adapter?.getRemoteDevice(address)
         } catch (e: IllegalArgumentException) {
@@ -185,41 +250,121 @@ class BleTransport(
             log("Missing BLUETOOTH_CONNECT")
             return
         }
+        if (ChargeSessionLogic.shouldSkipDuplicateConnect(
+                _connectionState.value,
+                _connectedAddress.value,
+                address,
+            ) && gatt != null && dataChar != null
+        ) {
+            log("Already connected to $address")
+            return
+        }
+        if (_connectionState.value == ConnectionState.Connecting &&
+            _connectedAddress.value.equals(address, ignoreCase = true)
+        ) {
+            log("Connect already in progress for $address")
+            return
+        }
+
         stopScan()
-        cleanup()
-        _connectionState.value = ConnectionState.Connecting
-        _connectedAddress.value = address
+        val generation = ++connectGeneration
+        val previous = gatt
+        setState(ConnectionState.Connecting)
+        setConnectedAddress(address)
         log("Connecting to $address...")
+        mainHandler.postDelayed({
+            if (generation != connectGeneration) return@postDelayed
+            if (_connectionState.value == ConnectionState.Connecting) {
+                log("Connect timed out for $address")
+                val g = gatt
+                gatt = null
+                dataChar = null
+                closeGatt(g)
+                setConnectedAddress(null)
+                setState(ConnectionState.Failed)
+            }
+        }, 15_000)
+
+        if (previous != null) {
+            try {
+                if (hasConnectPermission()) previous.disconnect()
+            } catch (e: SecurityException) { }
+            // Closing immediately races the old GATT's DISCONNECTED callback
+            // against the new connectGatt and leaves a zombie "Connected" UI.
+            mainHandler.postDelayed({
+                if (generation != connectGeneration) return@postDelayed
+                closeGatt(previous)
+                if (gatt === previous) gatt = null
+                openGatt(device, address, generation)
+            }, 400)
+        } else {
+            openGatt(device, address, generation)
+        }
+    }
+
+    private fun openGatt(device: BluetoothDevice, address: String, generation: Int) {
+        if (generation != connectGeneration) return
+        dataChar = null
+        waitingForCccd = false
         try {
             gatt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
             } else {
                 device.connectGatt(context, false, gattCallback)
             }
+            log("GATT connect issued for $address")
         } catch (e: SecurityException) {
             log("Connect blocked: ${e.message}")
+            setState(ConnectionState.Failed)
         }
     }
 
     override fun disconnect() {
+        connectGeneration++
+        stopScan()
+        waitingForCccd = false
+        val g = gatt
         try {
-            if (hasConnectPermission()) gatt?.disconnect()
+            if (hasConnectPermission()) g?.disconnect()
         } catch (e: SecurityException) { }
-        cleanup()
-        _connectionState.value = ConnectionState.Disconnected
+        mainHandler.postDelayed({
+            closeGatt(g)
+            if (gatt === g) {
+                gatt = null
+                dataChar = null
+            }
+        }, 300)
+        setConnectedAddress(null)
+        setState(ConnectionState.Disconnected)
     }
 
-    private fun cleanup() {
-        dataChar = null
-        _connectedAddress.value = null
+    private fun closeGatt(g: BluetoothGatt?) {
+        if (g == null) return
         try {
-            if (hasConnectPermission()) gatt?.close()
+            if (hasConnectPermission()) g.close()
         } catch (e: SecurityException) { }
+    }
+
+    private fun cleanupCurrent(from: BluetoothGatt?) {
+        if (from != null && from !== gatt) {
+            closeGatt(from)
+            return
+        }
+        dataChar = null
+        waitingForCccd = false
+        val g = gatt
         gatt = null
+        setConnectedAddress(null)
+        closeGatt(g)
     }
 
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
+            if (g !== gatt) {
+                log("Ignoring stale GATT connection callback (status=$status state=$newState)")
+                closeGatt(g)
+                return
+            }
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     try {
@@ -228,40 +373,55 @@ class BleTransport(
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     log("BLE Disconnected (status: $status)")
-                    cleanup()
-                    _connectionState.value = ConnectionState.Disconnected
+                    cleanupCurrent(g)
+                    setState(ConnectionState.Disconnected)
                 }
             }
         }
 
         override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
+            if (g !== gatt) return
             try {
                 if (hasConnectPermission()) g.discoverServices()
             } catch (e: SecurityException) { }
         }
 
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
+            if (g !== gatt) return
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                _connectionState.value = ConnectionState.Failed
+                setState(ConnectionState.Failed)
                 return
             }
 
             val service = g.getService(PtContract.SERVICE_UUID)
             val characteristic = service?.getCharacteristic(PtContract.DATA_CHAR_UUID)
-            
+
             if (characteristic == null) {
-                _connectionState.value = ConnectionState.Failed
+                setState(ConnectionState.Failed)
                 return
             }
 
             dataChar = characteristic
-            enableNotifications(g, characteristic)
-
-            _connectionState.value = ConnectionState.Connected
+            val canNotify = (characteristic.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY) != 0
+            if (canNotify) {
+                waitingForCccd = true
+                enableNotifications(g, characteristic)
+                mainHandler.postDelayed({
+                    if (g !== gatt) return@postDelayed
+                    if (waitingForCccd && _connectionState.value == ConnectionState.Connecting) {
+                        waitingForCccd = false
+                        log("CCCD write timed out — marking connected anyway")
+                        setState(ConnectionState.Connected)
+                    }
+                }, 2_000)
+            } else {
+                setState(ConnectionState.Connected)
+            }
         }
 
         @Suppress("DEPRECATION")
         override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic) {
+            if (g !== gatt) return
             val text = String(c.value ?: ByteArray(0), Charsets.UTF_8)
             _incoming.tryEmit(text)
         }
@@ -271,16 +431,24 @@ class BleTransport(
             characteristic: BluetoothGattCharacteristic,
             value: ByteArray
         ) {
+            if (gatt !== this@BleTransport.gatt) return
             val text = String(value, Charsets.UTF_8)
             _incoming.tryEmit(text)
         }
 
-        override fun onDescriptorWrite(g: BluetoothGatt, d: BluetoothGattDescriptor, status: Int) { }
+        override fun onDescriptorWrite(g: BluetoothGatt, d: BluetoothGattDescriptor, status: Int) {
+            if (g !== gatt) return
+            waitingForCccd = false
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                log("CCCD write failed (status=$status) — still marking connected")
+            }
+            setState(ConnectionState.Connected)
+        }
     }
 
     private fun enableNotifications(g: BluetoothGatt, c: BluetoothGattCharacteristic) {
         if (!hasConnectPermission()) return
-        
+
         val canNotify = (c.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY) != 0
         if (!canNotify) return
 
@@ -305,12 +473,8 @@ class BleTransport(
     override fun send(payload: String): Boolean {
         val g = gatt
         val c = dataChar
-        if (g == null) {
-            log("BLE Send failed: GATT is null")
-            return false
-        }
-        if (c == null) {
-            log("BLE Send failed: Characteristic is null")
+        if (g == null || c == null || _connectionState.value != ConnectionState.Connected) {
+            log("BLE Send failed: not ready (state=${_connectionState.value})")
             return false
         }
         if (!hasConnectPermission()) {

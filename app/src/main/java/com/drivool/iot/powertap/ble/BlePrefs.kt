@@ -6,7 +6,10 @@ import com.drivool.iot.powertap.DeviceIdentity
 object BlePrefs {
     private const val PREFS = "ble_prefs"
     private const val KEY_LAST_ADDRESS = "last_address"
-    private const val KEY_AUTO_CONNECT = "auto_connect"
+    // Deliberately a new key: the old "auto_connect" opt-out meant something
+    // broader, so an existing false value must not silently disable session
+    // resume and leave a user unable to stop their own charge.
+    private const val KEY_SESSION_RESUME = "session_resume"
     private const val KEY_KNOWN_DEVICES = "known_devices"
     private const val KEY_PAIRED_DEVICES = "paired_devices"
 
@@ -36,12 +39,21 @@ object BlePrefs {
     fun getLastDeviceAddress(context: Context): String? =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_LAST_ADDRESS, null)
 
-    fun isAutoConnectEnabled(context: Context): Boolean =
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_AUTO_CONNECT, true)
+    /**
+     * Whether the app may reconnect on its own to resume a session it owns.
+     *
+     * This is no longer "connect to the last charger on app open" — that
+     * silently occupied chargers, because the firmware stops advertising while a
+     * phone is connected. It now only covers picking a running session back up
+     * after a drop or an app restart.
+     */
+    fun isSessionResumeEnabled(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_SESSION_RESUME, true)
 
-    fun setAutoConnectEnabled(context: Context, enabled: Boolean) {
+    fun setSessionResumeEnabled(context: Context, enabled: Boolean) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .putBoolean(KEY_AUTO_CONNECT, enabled)
+            .putBoolean(KEY_SESSION_RESUME, enabled)
             .apply()
     }
 

@@ -66,6 +66,27 @@ object TransactionRepository {
         }
     }
 
+    /**
+     * Close out a session we turned out not to own.
+     *
+     * Happens when the charger reports a different transaction id than the one we
+     * were holding — ours never really existed on the charger (or was overwritten
+     * by a later start), so it is recorded as superseded rather than left showing
+     * as active forever.
+     */
+    fun markSuperseded(transactionId: String) {
+        val current = _sessions.value.toMutableList()
+        val index = current.indexOfFirst { it.transactionId == transactionId }
+        if (index == -1) return
+        val existing = current[index]
+        if (existing.status != "Active") return
+        current[index] = existing.copy(
+            status = "Superseded",
+            stopTime = existing.stopTime ?: System.currentTimeMillis(),
+        )
+        updateAndSave(current)
+    }
+
     fun addMeterValue(transactionId: String, currentMeter: Float) {
         val current = _sessions.value.toMutableList()
         val index = current.indexOfFirst { it.transactionId == transactionId }

@@ -99,9 +99,9 @@ class BleTestActivity : AppCompatActivity() {
             Toast.makeText(this, "Try Disconnecting and Reconnecting", Toast.LENGTH_SHORT).show()
         }
 
-        autoConnectCheck.isChecked = BlePrefs.isAutoConnectEnabled(this)
+        autoConnectCheck.isChecked = BlePrefs.isSessionResumeEnabled(this)
         autoConnectCheck.setOnCheckedChangeListener { _, isChecked ->
-            BlePrefs.setAutoConnectEnabled(this, isChecked)
+            BlePrefs.setSessionResumeEnabled(this, isChecked)
         }
 
         knownDevicesAdapter = ArrayAdapter(this, android.R.layout.simple_list_item_1)
