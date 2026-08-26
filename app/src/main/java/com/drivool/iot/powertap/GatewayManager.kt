@@ -916,7 +916,7 @@ object GatewayManager {
         // / disconnected the phone a second after Start. StopTransaction is definite.
         if (observed is HardwareSession.Idle &&
             ChargeSessionLogic.shouldHoldThroughIdleEvidence(
-                hasOpenLease = SessionLeaseStore.hasOpenLease,
+                leaseState = SessionLeaseStore.open?.state,
                 bleReady = bleReady,
                 isStopTransaction = action == "StopTransaction",
                 msSinceReconnect = now - linkRestoredAt,

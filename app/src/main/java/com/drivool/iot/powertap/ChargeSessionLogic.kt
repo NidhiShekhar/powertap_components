@@ -1,6 +1,7 @@
 package com.drivool.iot.powertap
 
 import com.drivool.iot.powertap.contract.ConnectionState
+import com.drivool.iot.powertap.session.LeaseState
 
 /**
  * Pure rules for charging + BLE so Home/Gateway cannot drift out of sync.
@@ -247,25 +248,50 @@ object ChargeSessionLogic {
     }
 
     /**
-     * Heartbeat / StatusNotification idle is not proof the session ended when we
-     * cannot see the charger over GATT. MQTT still delivers queued frames after
-     * a walk-away, and firmware retries a Heartbeat that was queued before Start
-     * — that is what used to call the session finished while the relay stayed on.
+     * Whether Disconnect / the connection card should treat this phone as mid-charge.
      *
-     * [StopTransaction] is definite and is never held.
-     * After GATT comes back, the same queued idle can race the first MeterValues;
-     * hold through [reconnectGraceMs] so reconnect does not immediately end the
-     * session it just restored.
+     * An open lease alone is not enough: Start claims the lease *before* the
+     * charger accepts, and a failed Start used to leave that claim around. The
+     * Disconnect button then warned "session still running" for a phone that was
+     * only paired — which is the bug this guards against.
+     */
+    fun isLiveOwnedSession(
+        leaseState: LeaseState?,
+        hardwareCharging: Boolean,
+        localChargingUi: Boolean,
+    ): Boolean {
+        if (leaseState == null || leaseState == LeaseState.Released) return false
+        if (hardwareCharging) return true
+        if (leaseState == LeaseState.Stopping) return true
+        // Active or still waiting on Start: only "live" while the UI is still
+        // in a charging state. AVAILABLE + open lease means the claim is stale.
+        if (leaseState == LeaseState.Active || leaseState == LeaseState.Requested) {
+            return localChargingUi
+        }
+        return false
+    }
+
+    /**
+     * Heartbeat / StatusNotification idle is not proof the session ended when we
+     * cannot see the charger over GATT *and* we already confirmed a charge.
+     *
+     * Only [Active]/[Stopping] leases hold through idle — a Requested lease that
+     * never started must be ended by the first idle heartbeat, otherwise an
+     * idle Connect→Disconnect cycle claims "session still running".
+     *
+     * [StopTransaction] is definite and is never held. After GATT comes back,
+     * hold through [reconnectGraceMs] so a queued idle cannot race MeterValues.
      */
     fun shouldHoldThroughIdleEvidence(
-        hasOpenLease: Boolean,
+        leaseState: LeaseState?,
         bleReady: Boolean,
         isStopTransaction: Boolean,
         msSinceReconnect: Long,
         reconnectGraceMs: Long,
     ): Boolean {
         if (isStopTransaction) return false
-        if (!hasOpenLease) return false
+        val confirmed = leaseState == LeaseState.Active || leaseState == LeaseState.Stopping
+        if (!confirmed) return false
         if (!bleReady) return true
         return msSinceReconnect in 0 until reconnectGraceMs
     }

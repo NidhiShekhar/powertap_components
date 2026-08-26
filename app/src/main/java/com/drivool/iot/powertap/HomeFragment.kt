@@ -478,6 +478,7 @@ class HomeFragment : Fragment() {
                                     updateOnlineStatus()
                                 }
                             } else if (currentState == DeviceState.STATE_STARTING) {
+                                SessionLeaseStore.release()
                                 currentState = DeviceState.STATE_AVAILABLE
                                 chargingUiStartedAt = 0L
                                 commandStartTime = 0
@@ -982,8 +983,10 @@ class HomeFragment : Fragment() {
             }
             return
         }
-        // Do not release the lease here: the charger may simply be unreachable.
-        // The reconciler ends it once the charger positively reports idle.
+        // Do not leave a Requested lease around after a failed Start: the charger
+        // is reachable (we timed out waiting for it) and never confirmed. Keeping
+        // the claim made the next Disconnect look like a mid-charge walk-away.
+        SessionLeaseStore.release()
         currentState = DeviceState.STATE_AVAILABLE
         chargingUiStartedAt = 0L
         hardwareStartSeen = false
@@ -1050,6 +1053,7 @@ class HomeFragment : Fragment() {
                 LogRepository.append("Firebase: Start Charging Error: $it")
                 activity?.runOnUiThread {
                     if (currentState == DeviceState.STATE_STARTING) {
+                        SessionLeaseStore.release()
                         currentState = DeviceState.STATE_AVAILABLE
                         commandStartTime = 0
                         updateOnlineStatus()
@@ -1300,8 +1304,13 @@ class HomeFragment : Fragment() {
     }
 
     private fun requestUserDisconnect() {
-        val charging = SessionLeaseStore.hasOpenLease
-        if (charging) {
+        val lease = SessionLeaseStore.open
+        val live = ChargeSessionLogic.isLiveOwnedSession(
+            leaseState = lease?.state,
+            hardwareCharging = GatewayManager.hardwareSession.value is HardwareSession.Charging,
+            localChargingUi = isChargingUi(currentState),
+        )
+        if (live) {
             // Walking away mid-charge means losing the ability to stop, so make
             // that explicit rather than silently dropping the link.
             showActionDialog(
@@ -1313,6 +1322,15 @@ class HomeFragment : Fragment() {
                 negativeText = "Stay connected",
             )
             return
+        }
+        // Open lease but nothing is actually charging — usually a failed Start
+        // that never released its claim. Clear it so Disconnect does not leave
+        // the card saying "session still running".
+        if (lease != null) {
+            SessionLeaseStore.release()
+            LogRepository.append(
+                "Home: cleared stale lease ${lease.transactionId} (${lease.state}) on idle disconnect",
+            )
         }
         doUserDisconnect(wasCharging = false)
     }
@@ -1805,7 +1823,11 @@ class HomeFragment : Fragment() {
         connectionCard?.visibility = View.VISIBLE
         status.visibility = View.VISIBLE
 
-        val hasSession = SessionLeaseStore.hasOpenLease
+        val hasSession = ChargeSessionLogic.isLiveOwnedSession(
+            leaseState = SessionLeaseStore.open?.state,
+            hardwareCharging = GatewayManager.hardwareSession.value is HardwareSession.Charging,
+            localChargingUi = isChargingUi(currentState),
+        )
 
         // title / detail / icon / colour / button label. A null button label
         // hides the button, so there is never more than one thing to tap.

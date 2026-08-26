@@ -1,6 +1,7 @@
 package com.drivool.iot.powertap
 
 import com.drivool.iot.powertap.contract.ConnectionState
+import com.drivool.iot.powertap.session.LeaseState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -358,20 +359,22 @@ class ChargeSessionLogicTest {
     }
 
     @Test
-    fun idleEvidenceIsHeldWhileGattIsDownOrJustRestored() {
+    fun idleEvidenceIsHeldOnlyForConfirmedSessions() {
         val grace = 20_000L
+        // Active lease, BLE down: hold MQTT idle so a walk-away does not end the charge.
         assertTrue(
             ChargeSessionLogic.shouldHoldThroughIdleEvidence(
-                hasOpenLease = true,
+                leaseState = LeaseState.Active,
                 bleReady = false,
                 isStopTransaction = false,
                 msSinceReconnect = 60_000L,
                 reconnectGraceMs = grace,
             ),
         )
+        // Active lease, just reconnected: hold through grace.
         assertTrue(
             ChargeSessionLogic.shouldHoldThroughIdleEvidence(
-                hasOpenLease = true,
+                leaseState = LeaseState.Active,
                 bleReady = true,
                 isStopTransaction = false,
                 msSinceReconnect = 1_000L,
@@ -380,16 +383,35 @@ class ChargeSessionLogicTest {
         )
         assertFalse(
             ChargeSessionLogic.shouldHoldThroughIdleEvidence(
-                hasOpenLease = true,
+                leaseState = LeaseState.Active,
                 bleReady = true,
                 isStopTransaction = false,
                 msSinceReconnect = grace,
                 reconnectGraceMs = grace,
             ),
         )
+        // Requested never started: first idle must end it, not hold it.
         assertFalse(
             ChargeSessionLogic.shouldHoldThroughIdleEvidence(
-                hasOpenLease = true,
+                leaseState = LeaseState.Requested,
+                bleReady = false,
+                isStopTransaction = false,
+                msSinceReconnect = 0L,
+                reconnectGraceMs = grace,
+            ),
+        )
+        assertFalse(
+            ChargeSessionLogic.shouldHoldThroughIdleEvidence(
+                leaseState = LeaseState.Requested,
+                bleReady = true,
+                isStopTransaction = false,
+                msSinceReconnect = 1_000L,
+                reconnectGraceMs = grace,
+            ),
+        )
+        assertFalse(
+            ChargeSessionLogic.shouldHoldThroughIdleEvidence(
+                leaseState = LeaseState.Active,
                 bleReady = false,
                 isStopTransaction = true,
                 msSinceReconnect = 0L,
@@ -398,11 +420,65 @@ class ChargeSessionLogicTest {
         )
         assertFalse(
             ChargeSessionLogic.shouldHoldThroughIdleEvidence(
-                hasOpenLease = false,
+                leaseState = null,
                 bleReady = false,
                 isStopTransaction = false,
                 msSinceReconnect = 0L,
                 reconnectGraceMs = grace,
+            ),
+        )
+    }
+
+    @Test
+    fun liveOwnedSession_requiresMoreThanAnOpenLease() {
+        // Failed Start left a Requested lease while UI is Available — not mid-charge.
+        assertFalse(
+            ChargeSessionLogic.isLiveOwnedSession(
+                leaseState = LeaseState.Requested,
+                hardwareCharging = false,
+                localChargingUi = false,
+            ),
+        )
+        assertFalse(
+            ChargeSessionLogic.isLiveOwnedSession(
+                leaseState = LeaseState.Active,
+                hardwareCharging = false,
+                localChargingUi = false,
+            ),
+        )
+        assertTrue(
+            ChargeSessionLogic.isLiveOwnedSession(
+                leaseState = LeaseState.Active,
+                hardwareCharging = false,
+                localChargingUi = true,
+            ),
+        )
+        assertTrue(
+            ChargeSessionLogic.isLiveOwnedSession(
+                leaseState = LeaseState.Requested,
+                hardwareCharging = false,
+                localChargingUi = true,
+            ),
+        )
+        assertTrue(
+            ChargeSessionLogic.isLiveOwnedSession(
+                leaseState = LeaseState.Requested,
+                hardwareCharging = true,
+                localChargingUi = false,
+            ),
+        )
+        assertTrue(
+            ChargeSessionLogic.isLiveOwnedSession(
+                leaseState = LeaseState.Stopping,
+                hardwareCharging = false,
+                localChargingUi = false,
+            ),
+        )
+        assertFalse(
+            ChargeSessionLogic.isLiveOwnedSession(
+                leaseState = null,
+                hardwareCharging = true,
+                localChargingUi = true,
             ),
         )
     }
