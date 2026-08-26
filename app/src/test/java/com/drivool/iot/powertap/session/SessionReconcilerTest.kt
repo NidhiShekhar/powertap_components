@@ -157,10 +157,77 @@ class SessionReconcilerTest {
     }
 
     @Test
-    fun chargerRunningDifferentId_isOccupiedAndMarksOursStale() {
+    fun chargerRunningDifferentId_reclaimsWhenWeOwnTheCloudSession() {
+        // Firmware overwrote strTID after our Start. Cloud still names us as
+        // owner. Adopt the live id so Stop and auto-reconnect keep working.
+        assertEquals(
+            Reconciliation.Reclaim("T2"),
+            reconcile(
+                lease(tid = "T1"),
+                HardwareSession.Charging("T2", now),
+                cloud(tid = "T1", state = DeviceState.STATE_CHARGING, fresh = true, owner = "alice"),
+                account = "alice",
+            ),
+        )
+    }
+
+    @Test
+    fun chargerRunningDifferentId_reclaimsWhenCloudTidAlsoMoved() {
+        assertEquals(
+            Reconciliation.Reclaim("T2"),
+            reconcile(
+                lease(tid = "T1"),
+                HardwareSession.Charging("T2", now),
+                cloud(tid = "T2", state = DeviceState.STATE_CHARGING, fresh = true, owner = "alice"),
+                account = "alice",
+            ),
+        )
+    }
+
+    @Test
+    fun chargerRunningDifferentId_reclaimsActiveLeaseWithNoForeignOwner() {
+        // Guest / cloud lag: we hold an Active lease, nobody else is named.
+        // Dropping it is what stranded a walk-away.
+        assertEquals(
+            Reconciliation.Reclaim("T2"),
+            reconcile(lease(tid = "T1"), HardwareSession.Charging("T2", now)),
+        )
+    }
+
+    @Test
+    fun chargerRunningDifferentId_isOccupiedWhenSomeoneElseOwnsIt() {
         assertEquals(
             Reconciliation.Occupied("T2", ourStaleTransactionId = "T1"),
-            reconcile(lease(tid = "T1"), HardwareSession.Charging("T2", now)),
+            reconcile(
+                lease(tid = "T1"),
+                HardwareSession.Charging("T2", now),
+                cloud(tid = "T2", state = DeviceState.STATE_CHARGING, fresh = true, owner = "bob"),
+                account = "alice",
+            ),
+        )
+    }
+
+    @Test
+    fun requestedSessionDifferentIdDuringGrace_isAdoptedAsOurStart() {
+        val startedAt = now - 1_000L
+        assertEquals(
+            Reconciliation.Reclaim("T2"),
+            reconcile(
+                lease(tid = "T1", state = LeaseState.Requested, startedAt = startedAt),
+                HardwareSession.Charging("T2", now),
+            ),
+        )
+    }
+
+    @Test
+    fun requestedSessionDifferentIdAfterGrace_isOccupiedWhenStartDidNotTake() {
+        val startedAt = now - (SessionReconciler.START_GRACE_MS + 1_000L)
+        assertEquals(
+            Reconciliation.Occupied("T2", ourStaleTransactionId = "T1"),
+            reconcile(
+                lease(tid = "T1", state = LeaseState.Requested, startedAt = startedAt),
+                HardwareSession.Charging("T2", now),
+            ),
         )
     }
 

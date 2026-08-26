@@ -15,6 +15,13 @@ object ChargeSessionLogic {
     const val MAX_RECONNECT_DELAY_MS = 15_000L
     const val HEARTBEAT_STALE_MS = 45_000L
 
+    /**
+     * A scan window is 20s and a GATT attempt 15s. If the transport is still
+     * Scanning or Connecting past this, the attempt is wedged (timeout never
+     * fired) and the supervisor must tear it down rather than wait forever.
+     */
+    const val RECONNECT_ATTEMPT_STALE_MS = 25_000L
+
     fun isHeartbeatFresh(
         heartbeatMs: Long,
         nowMs: Long,
@@ -68,6 +75,49 @@ object ChargeSessionLogic {
         return currentState == ConnectionState.Connected ||
             currentState == ConnectionState.Connecting ||
             currentState == ConnectionState.Scanning
+    }
+
+    /**
+     * A tap must never be swallowed by an attempt the app started on its own.
+     *
+     * [shouldSkipDuplicateConnect] exists to protect a *live* GATT from being
+     * torn down, but the session-resume retry parks the transport in Scanning or
+     * Connecting for most of its cycle. Reporting "already connecting" there
+     * makes the Connect button do nothing at all, which is indistinguishable
+     * from the app being broken — and it is the state the user is most likely to
+     * be tapping in, because they only reach for the button when a reconnect is
+     * visibly failing. A half-open attempt is worth restarting; a Connected link
+     * is not.
+     */
+    fun shouldRestartAttemptForUser(state: ConnectionState): Boolean =
+        state == ConnectionState.Scanning || state == ConnectionState.Connecting
+
+    /**
+     * Which transaction id the lease should hold once the cloud acknowledges our
+     * Start.
+     *
+     * The charger copies the `tid` out of RemoteStart and stores it verbatim
+     * (`strcpy(gDeviceState.strTID, tid)` in esp/mqtt.cpp), then quotes that same
+     * id back on StartTransaction, MeterValues and StopTransaction. It is the
+     * only id that can ever be matched against hardware.
+     *
+     * So a cloud ack naming a *different* id is not a rename we are able to
+     * honour — the charger never heard about it. Adopting it produces a lease no
+     * charger will ever confirm, which the reconciler correctly reads as
+     * "someone else's session" and drops. Losing the lease loses both Stop and
+     * the authority to reconnect, so a mid-charge walk-away becomes permanent.
+     *
+     * The server id is only followed when the charger is demonstrably already
+     * running it.
+     */
+    fun leaseTransactionIdAfterAck(
+        proposedTid: String,
+        serverTid: String?,
+        hardwareTid: String?,
+    ): String {
+        val server = serverTid?.trim().orEmpty()
+        if (server.isEmpty() || server == proposedTid) return proposedTid
+        return if (server == hardwareTid?.trim()) server else proposedTid
     }
 
     fun isScanResultFresh(
@@ -153,7 +203,29 @@ object ChargeSessionLogic {
     fun ownsRunningSession(leaseTransactionId: String?, hardwareTransactionId: String?): Boolean {
         if (leaseTransactionId.isNullOrBlank()) return false
         if (hardwareTransactionId.isNullOrBlank()) return false
-        return leaseTransactionId == hardwareTransactionId
+        return leaseTransactionId.trim() == hardwareTransactionId.trim()
+    }
+
+    /**
+     * This login started the live charge, regardless of whether the charger's
+     * current transaction id still matches the one we proposed at Start.
+     *
+     * Firmware overwrites `strTID` on every RemoteStart, and the cloud copy of
+     * the id can lag that. Treating a rename as "someone else's session" is what
+     * released the lease mid-charge, which is the only authority auto-reconnect
+     * and Stop have. Heartbeat freshness is ignored: a walk-away is exactly when
+     * the cloud heartbeat goes stale, and that must not cost us the session.
+     */
+    fun accountOwnsLiveSession(
+        currentAccount: String?,
+        ownerAccount: String?,
+        cloudState: Int,
+    ): Boolean {
+        if (currentAccount.isNullOrBlank() || currentAccount == "guest") return false
+        if (ownerAccount.isNullOrBlank() || ownerAccount != currentAccount) return false
+        return cloudState == DeviceState.STATE_CHARGING ||
+            cloudState == DeviceState.STATE_STARTED ||
+            cloudState == DeviceState.STATE_STARTING
     }
 
     /**
@@ -168,15 +240,77 @@ object ChargeSessionLogic {
         heartbeatFresh: Boolean,
         requireFreshHeartbeat: Boolean = true,
     ): Boolean {
-        if (currentAccount.isNullOrBlank() || currentAccount == "guest") return false
-        if (ownerAccount.isNullOrBlank() || ownerAccount != currentAccount) return false
+        if (!accountOwnsLiveSession(currentAccount, ownerAccount, cloudState)) return false
         if (transactionId.isNullOrBlank()) return false
-        val charging = cloudState == DeviceState.STATE_CHARGING ||
-            cloudState == DeviceState.STATE_STARTED ||
-            cloudState == DeviceState.STATE_STARTING
-        if (!charging) return false
         if (requireFreshHeartbeat && !heartbeatFresh) return false
         return true
+    }
+
+    /**
+     * Heartbeat / StatusNotification idle is not proof the session ended when we
+     * cannot see the charger over GATT. MQTT still delivers queued frames after
+     * a walk-away, and firmware retries a Heartbeat that was queued before Start
+     * — that is what used to call the session finished while the relay stayed on.
+     *
+     * [StopTransaction] is definite and is never held.
+     * After GATT comes back, the same queued idle can race the first MeterValues;
+     * hold through [reconnectGraceMs] so reconnect does not immediately end the
+     * session it just restored.
+     */
+    fun shouldHoldThroughIdleEvidence(
+        hasOpenLease: Boolean,
+        bleReady: Boolean,
+        isStopTransaction: Boolean,
+        msSinceReconnect: Long,
+        reconnectGraceMs: Long,
+    ): Boolean {
+        if (isStopTransaction) return false
+        if (!hasOpenLease) return false
+        if (!bleReady) return true
+        return msSinceReconnect in 0 until reconnectGraceMs
+    }
+
+    /**
+     * A session-resume attempt parked in Scanning/Connecting with no timeout
+     * firing. The supervisor must disconnect and try again rather than treat
+     * "already connecting" as success.
+     */
+    fun reconnectAttemptNeedsRestart(
+        state: ConnectionState,
+        busySinceMs: Long,
+        nowMs: Long,
+        staleAfterMs: Long = RECONNECT_ATTEMPT_STALE_MS,
+    ): Boolean {
+        if (state != ConnectionState.Scanning && state != ConnectionState.Connecting) return false
+        if (busySinceMs <= 0L) return false
+        return nowMs - busySinceMs >= staleAfterMs
+    }
+
+    /**
+     * GATT reports Connected but no charger packet has arrived. A walk-away
+     * sometimes leaves Android holding a dead handle; the supervisor then
+     * stops because it thinks the link is up, and even a tap looks like
+     * "already connected".
+     */
+    fun shouldDropSilentGatt(
+        bleReady: Boolean,
+        hasOpenLease: Boolean,
+        lastBlePacketAtMs: Long,
+        nowMs: Long,
+        silentAfterMs: Long = HEARTBEAT_STALE_MS,
+    ): Boolean {
+        if (!bleReady || !hasOpenLease) return false
+        if (lastBlePacketAtMs <= 0L) return false
+        return nowMs - lastBlePacketAtMs >= silentAfterMs
+    }
+
+    /**
+     * RemoteStop must name the id the charger is actually running. After a
+     * firmware rename that is the hardware id, not the one we proposed.
+     */
+    fun stopTargetTransactionId(leaseTid: String, hardwareTid: String?): String {
+        val live = hardwareTid?.trim().orEmpty()
+        return live.ifBlank { leaseTid }
     }
 
     fun treatAsCharging(localState: Int, commandInFlight: Boolean): Boolean =

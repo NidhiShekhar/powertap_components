@@ -948,11 +948,18 @@ class HomeFragment : Fragment() {
     }
 
     /**
-     * The session is real. [tid] comes from the server ack, which may differ from
-     * the id we proposed, so the lease follows the server rather than our guess.
+     * The session is real. [tid] is a *candidate* id from the server ack; the
+     * lease only follows it when the charger is running that id too, because the
+     * charger can only ever confirm the id we put in RemoteStart.
      */
-    private fun commitBilledCharging(tid: String) {
+    private fun commitBilledCharging(candidateTid: String) {
         val owned = SessionLeaseStore.open
+        val tid = ChargeSessionLogic.leaseTransactionIdAfterAck(
+            proposedTid = owned?.transactionId ?: candidateTid,
+            serverTid = candidateTid,
+            hardwareTid = (GatewayManager.hardwareSession.value as? HardwareSession.Charging)
+                ?.transactionId,
+        )
         if (owned != null && owned.transactionId != tid) {
             bindStartedSession(tid, previousProposed = owned.transactionId)
         } else {
@@ -1086,15 +1093,11 @@ class HomeFragment : Fragment() {
 
         if (leaseTid.isNullOrEmpty() &&
             running != null &&
-            ChargeSessionLogic.accountOwnsCloudSession(
+            ChargeSessionLogic.accountOwnsLiveSession(
                 currentAccount = FirebaseApiManager.accountId,
                 ownerAccount = cloudOwnerAccount,
-                transactionId = cloudTransactionId,
                 cloudState = cloudRawState,
-                heartbeatFresh = true,
-                requireFreshHeartbeat = false,
-            ) &&
-            cloudTransactionId == running
+            )
         ) {
             reclaimOwnedSession(running)
             leaseTid = transactionId
@@ -1118,15 +1121,32 @@ class HomeFragment : Fragment() {
         if (running != null &&
             !ChargeSessionLogic.ownsRunningSession(leaseTid, running)
         ) {
-            LogRepository.append("Home: Stop refused — lease $leaseTid ≠ live $running")
-            sb.setState(true)
-            handleOccupiedSession(
-                Reconciliation.Occupied(running, ourStaleTransactionId = leaseTid),
-            )
-            return
+            // Firmware may have overwritten strTID after our Start. If this
+            // login still owns the charge, bind to the live id and stop that —
+            // do not Occupied-drop the lease, which is what stranded Stop and
+            // auto-reconnect after a walk-away.
+            if (ChargeSessionLogic.accountOwnsLiveSession(
+                    FirebaseApiManager.accountId,
+                    cloudOwnerAccount,
+                    cloudRawState,
+                )
+            ) {
+                LogRepository.append(
+                    "Home: Stop retargeting lease $leaseTid → live $running (account owns session)",
+                )
+                reclaimOwnedSession(running)
+                leaseTid = transactionId ?: running
+            } else {
+                LogRepository.append("Home: Stop refused — lease $leaseTid ≠ live $running")
+                sb.setState(true)
+                handleOccupiedSession(
+                    Reconciliation.Occupied(running, ourStaleTransactionId = leaseTid),
+                )
+                return
+            }
         }
 
-        val tid = leaseTid
+        val tid = ChargeSessionLogic.stopTargetTransactionId(leaseTid, running)
         SessionLeaseStore.markStopping()
 
         val ocppStop = "[2,\"${System.currentTimeMillis()}\",\"RemoteStop\",{\"tid\":\"$tid\"}]"
@@ -1199,6 +1219,9 @@ class HomeFragment : Fragment() {
     private fun resumeOwnedSession() {
         val ctx = context ?: return
         val lease = SessionLeaseStore.open ?: return
+        // Coming back to the app is the "when you come back" that Home promised
+        // when they disconnected mid-charge.
+        GatewayManager.rearmSessionResume()
         if (GatewayManager.userRequestedDisconnect) return
         if (!isBluetoothEnabled()) {
             updateBleStatus(GatewayManager.bleTransport.connectionState.value)
@@ -1228,11 +1251,32 @@ class HomeFragment : Fragment() {
                 return
             }
             ConnectionState.Scanning, ConnectionState.Connecting -> {
-                cancelPairing()
-                return
+                // Cancel belongs to a pairing the user started. A session-resume
+                // attempt is retried instead — abandoning it is how people ended
+                // up with no route back to a charge only this phone can stop.
+                if (isPairingFromHome) {
+                    cancelPairing()
+                    return
+                }
             }
             else -> Unit
         }
+
+        // An open lease pins the target: reconnect to the charger running our
+        // session, never to whatever the device dropdown happens to show.
+        if (SessionLeaseStore.hasOpenLease) {
+            GatewayManager.rearmSessionResume()
+            if (GatewayManager.retrySessionLinkNow()) {
+                Toast.makeText(
+                    ctx,
+                    "Reconnecting to ${lastDeviceDisplayName()}…",
+                    Toast.LENGTH_SHORT,
+                ).show()
+                updateBleStatus(GatewayManager.bleTransport.connectionState.value)
+                return
+            }
+        }
+
         val known = BlePrefs.getKnownDevices(ctx)
         if (known.isEmpty()) {
             showAddDeviceMenu(btnConnect ?: return)
@@ -1338,6 +1382,26 @@ class HomeFragment : Fragment() {
         // the normal rejection handling explain it.
         if (ChargeSessionLogic.ownsRunningSession(previous, activeTid)) return false
 
+        // We started this charge and the charger is quoting a different id
+        // (firmware overwrite). Adopt the live id so Stop and reconnect keep
+        // working instead of treating it as a stranger's session.
+        if (previous != null &&
+            ChargeSessionLogic.accountOwnsLiveSession(
+                FirebaseApiManager.accountId,
+                cloudOwnerAccount,
+                cloudRawState,
+            )
+        ) {
+            LogRepository.append(
+                "Home: charger named tid=$activeTid for our session $previous — adopting",
+            )
+            reclaimOwnedSession(activeTid)
+            if (ack.action == "RemoteStop") {
+                performStopCharging()
+            }
+            return true
+        }
+
         // Foreign session — never claim it. Drop a mismatched local lease.
         if (previous != null) {
             handleOccupiedSession(
@@ -1381,7 +1445,11 @@ class HomeFragment : Fragment() {
             state == ConnectionState.Disconnected &&
                 (previous == ConnectionState.Connected || previous == ConnectionState.Connecting) ->
                 Toast.makeText(context, "Disconnected from $name", Toast.LENGTH_SHORT).show()
-            state == ConnectionState.Failed ->
+            // While a session is resuming this fires on every failed attempt,
+            // which is once per backoff for as long as the user is out of range.
+            // The connection card already says the same thing without stacking
+            // modals they cannot act on until they walk back.
+            state == ConnectionState.Failed && !SessionLeaseStore.hasOpenLease ->
                 showActionDialog(
                     title = "Couldn't connect",
                     message = "Make sure $name is switched on and you're standing close to it, " +
@@ -1585,7 +1653,12 @@ class HomeFragment : Fragment() {
             return
         }
 
-        if (isOsBonded(ctx, bleAddress)) {
+        // Android bonding interferes with first-time pairing through the app.
+        // A charger we have already used (or that is running our session) must
+        // still be reconnectable — blocking here is why "come back and tap
+        // Connect" did nothing after a walk-away dropped the lease.
+        val knownToApp = BlePrefs.isPaired(ctx, bleAddress) || SessionLeaseStore.hasOpenLease
+        if (!knownToApp && isOsBonded(ctx, bleAddress)) {
             androidx.appcompat.app.AlertDialog.Builder(ctx)
                 .setTitle("Unpair in phone settings first")
                 .setMessage(
@@ -1742,14 +1815,14 @@ class HomeFragment : Fragment() {
                 detail = "Keep the charger switched on and stay close to it.",
                 icon = "🔍",
                 color = R.color.primary_blue,
-                action = "Cancel",
+                action = if (isPairingFromHome) "Cancel" else "Retry now",
             )
             ConnectionState.Connecting -> ConnectionCardView(
                 title = "Connecting to $name…",
                 detail = "Almost there — don't walk away yet.",
                 icon = "🔄",
                 color = R.color.primary_blue,
-                action = "Cancel",
+                action = if (isPairingFromHome) "Cancel" else "Retry now",
             )
             ConnectionState.Connected -> ConnectionCardView(
                 title = "Connected to $name",
@@ -1775,7 +1848,10 @@ class HomeFragment : Fragment() {
                     detail = "Charging continues on the charger. We need the link back to stop it.",
                     icon = "🔄",
                     color = R.color.status_warning,
-                    action = null,
+                    // Never hide this while a session is live: the retry can only
+                    // succeed once the user is back in range, and they need a way
+                    // to say so rather than waiting out a backoff.
+                    action = "Retry now",
                 )
                 hasSession -> ConnectionCardView(
                     title = "Session still running",

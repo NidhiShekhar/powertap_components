@@ -1,5 +1,6 @@
 package com.drivool.iot.powertap.session
 
+import com.drivool.iot.powertap.ChargeSessionLogic
 import com.drivool.iot.powertap.DeviceState
 
 /**
@@ -103,7 +104,8 @@ object SessionReconciler {
         }
 
         return when (hardware) {
-            is HardwareSession.Charging -> confirmOrOccupied(open, hardware.transactionId)
+            is HardwareSession.Charging ->
+                confirmOrOccupied(open, hardware.transactionId, cloud, currentAccount, nowMs)
 
             is HardwareSession.Idle ->
                 if (isWithinStartGrace(open, nowMs)) {
@@ -149,13 +151,40 @@ object SessionReconciler {
                 ?: Reconciliation.HoldUnknown
     }
 
-    private fun confirmOrOccupied(lease: SessionLease, hardwareTid: String): Reconciliation = when {
+    private fun confirmOrOccupied(
+        lease: SessionLease,
+        hardwareTid: String,
+        cloud: CloudSession,
+        currentAccount: String?,
+        nowMs: Long,
+    ): Reconciliation = when {
         // Older firmware reports no id. The relay is on and we hold a lease, so
         // the session is almost certainly ours — keep it rather than orphan it.
         hardwareTid.isBlank() -> Reconciliation.Confirmed(lease.transactionId)
         hardwareTid == lease.transactionId -> Reconciliation.Confirmed(hardwareTid)
-        // Charger runs a different session. Ours is stale; do not take theirs over.
+        // This login owns the cloud record: firmware renamed strTID under us.
+        ChargeSessionLogic.accountOwnsLiveSession(
+            currentAccount,
+            cloud.ownerAccount,
+            cloud.state,
+        ) -> Reconciliation.Reclaim(hardwareTid)
+        // Someone else is named as owner — do not take their session over.
+        isForeignOwner(cloud, currentAccount) ->
+            Reconciliation.Occupied(hardwareTid, ourStaleTransactionId = lease.transactionId)
+        // We still hold an open lease and no foreign owner is on the record.
+        // Treat a different live id as a rename (guest sessions, cloud lag)
+        // rather than dropping the lease — that is what killed reconnect.
+        lease.state == LeaseState.Active ||
+            lease.state == LeaseState.Stopping ||
+            isWithinStartGrace(lease, nowMs) -> Reconciliation.Reclaim(hardwareTid)
         else -> Reconciliation.Occupied(hardwareTid, ourStaleTransactionId = lease.transactionId)
+    }
+
+    private fun isForeignOwner(cloud: CloudSession, currentAccount: String?): Boolean {
+        val owner = cloud.ownerAccount?.takeIf { it.isNotBlank() } ?: return false
+        if (owner == "guest") return false
+        if (currentAccount.isNullOrBlank() || currentAccount == "guest") return true
+        return owner != currentAccount
     }
 
     private fun reclaimFromCloud(

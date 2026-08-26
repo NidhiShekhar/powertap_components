@@ -31,6 +31,15 @@ import org.json.JSONObject
  * and provides a bridge between them.
  */
 object GatewayManager {
+    /** How often the reconnect supervisor re-checks the link while it waits. */
+    private const val RECONNECT_TICK_MS = 1_000L
+
+    /** Delay before a reconnect triggered by a queued command we must deliver. */
+    private const val IMMEDIATE_RECONNECT_MS = 400L
+
+    /** Beyond this the backoff is already at its ceiling; stop counting. */
+    private const val MAX_RECONNECT_ATTEMPT = 8
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     private var _bleTransport: DeviceTransport? = null
@@ -105,6 +114,10 @@ object GatewayManager {
     private var pendingChargerCommand: String? = null
     private var lastForwardedMqtt: String? = null
     private var lastForwardedMqttAt = 0L
+    /** Last packet that arrived over GATT, not MQTT. Dead-handle detection. */
+    private var lastBlePacketAt = 0L
+    /** When GATT last reached Connected. Reconnect-grace for queued idle frames. */
+    private var linkRestoredAt = 0L
 
     private var lastCommandMsgId: String? = null
     private var lastCommandAction: String? = null
@@ -153,8 +166,13 @@ object GatewayManager {
         }
 
         userRequestedDisconnect = false
-        if (userInitiated) noteUserAction()
-        reconnectJob?.cancel()
+        if (userInitiated) {
+            noteUserAction()
+            // Only a tap cancels the supervisor. Cancelling it from a resume
+            // attempt would cancel the coroutine making that very call.
+            reconnectJob?.cancel()
+            reconnectAttempt = 0
+        }
 
         val resolvedId = deviceId?.takeIf { it.isNotBlank() }
             ?: DeviceIdentity.deviceIdFromBle(bleAddress)
@@ -175,8 +193,19 @@ object GatewayManager {
         val current = bleTransport.connectedAddress.value
         val state = bleTransport.connectionState.value
         if (ChargeSessionLogic.shouldSkipDuplicateConnect(state, current, bleAddress)) {
-            LogRepository.append("Gateway: Already on $bleAddress ($state) — not tearing GATT down")
-            return true
+            if (userInitiated && ChargeSessionLogic.shouldRestartAttemptForUser(state)) {
+                // The session-resume retry holds the transport in Scanning or
+                // Connecting for most of its cycle, so this branch is where a
+                // tap normally lands. Reporting success and doing nothing left
+                // the user with a Connect button that never worked.
+                LogRepository.append(
+                    "Gateway: User asked again during $state — restarting attempt on $bleAddress",
+                )
+                bleTransport.disconnect()
+            } else {
+                LogRepository.append("Gateway: Already on $bleAddress ($state) — not tearing GATT down")
+                return true
+            }
         }
 
         LogRepository.append(
@@ -206,13 +235,61 @@ object GatewayManager {
         connectToBle(qr.bleAddress, qr.deviceId, qr.displayName, scanFirst = true)
 
     fun markUserDisconnect() {
+        val keepSession = SessionLeaseStore.hasOpenLease
         userRequestedDisconnect = true
         noteUserAction()
         reconnectJob?.cancel()
         _isReconnecting.value = false
-        pendingChargerCommand = null
+        // A queued RemoteStop is the user's only way to end a charge they own,
+        // so it outlives a manual disconnect.
+        if (!keepSession) pendingChargerCommand = null
         _bleTransport?.disconnect()
-        LogRepository.append("Gateway: User disconnected BLE — will not reconnect until asked")
+        LogRepository.append(
+            if (keepSession) {
+                "Gateway: User dropped BLE mid-session — resume re-arms next time they open the app"
+            } else {
+                "Gateway: User disconnected BLE — will not reconnect until asked"
+            },
+        )
+    }
+
+    /**
+     * The user is back in front of the app with a session they still own.
+     *
+     * Home tells them "we'll reconnect automatically when you come back", and
+     * only the phone holding the lease can stop the charge — so a manual
+     * disconnect has to mean "not right now", never "not ever". Leaving the flag
+     * latched was what stranded a user who tapped Disconnect and walked away:
+     * every reconnect rule short-circuits on it, so nothing tried again and the
+     * charger kept charging with no way to stop it.
+     */
+    fun rearmSessionResume() {
+        if (!SessionLeaseStore.hasOpenLease) return
+        if (!userRequestedDisconnect) return
+        userRequestedDisconnect = false
+        reconnectAttempt = 0
+        LogRepository.append("Gateway: Back with an open session — auto-reconnect re-armed")
+    }
+
+    /**
+     * "Try now" from the connection card. Resets the backoff and pre-empts an
+     * attempt already in flight so the tap has a visible effect.
+     */
+    fun retrySessionLinkNow(): Boolean {
+        if (_bleTransport == null) return false
+        if (!SessionLeaseStore.hasOpenLease) return false
+        userRequestedDisconnect = false
+        noteUserAction()
+        reconnectAttempt = 0
+        val state = _bleTransport?.connectionState?.value
+        if (state != null && ChargeSessionLogic.shouldRestartAttemptForUser(state)) {
+            _bleTransport?.disconnect()
+        }
+        // Cancel the supervisor's backoff so a tap is not sat out until the
+        // next 1/2/4/15s tick. Immediate re-arm is what "Retry now" means.
+        reconnectJob?.cancel()
+        scheduleReconnect(immediate = true)
+        return true
     }
 
     /** Record deliberate interaction so the idle release timer restarts. */
@@ -321,22 +398,81 @@ object GatewayManager {
      */
     private fun scheduleReconnect(immediate: Boolean = false) {
         if (userRequestedDisconnect) return
-        val state = _bleTransport?.connectionState?.value ?: return
-        if (BleConnectionPolicy.isLinkBusy(state)) return
         if (!SessionLeaseStore.hasOpenLease) {
             LogRepository.append("Gateway: Not reconnecting — no session owned by this phone")
             _isReconnecting.value = false
             return
         }
-        reconnectJob?.cancel()
+        if (reconnectJob?.isActive == true) {
+            if (!immediate) return
+            // A queued command — usually the RemoteStop that ends the charge —
+            // is waiting on the link, so it must not sit out a backoff.
+            reconnectJob?.cancel()
+            reconnectAttempt = 0
+        }
         _isReconnecting.value = true
-        val delayMs = if (immediate) 400L else ChargeSessionLogic.reconnectDelayMs(reconnectAttempt)
-        reconnectAttempt = (reconnectAttempt + 1).coerceAtMost(8)
-        reconnectJob = scope.launch {
-            delay(delayMs)
-            if (userRequestedDisconnect) return@launch
-            LogRepository.append("Gateway: Session reconnect attempt $reconnectAttempt")
-            resumeSessionLink()
+        reconnectJob = scope.launch { superviseReconnect(immediate) }
+    }
+
+    /**
+     * Keep trying to get the link back for as long as this phone owns a session.
+     *
+     * Deliberately a loop that re-arms itself, rather than one attempt chained to
+     * the next ConnectionState change. A StateFlow only emits on a *change*, and
+     * several ways an attempt can end leave the state exactly where it already
+     * was: Failed → Failed after a scan window expires, or startScan() returning
+     * early because Bluetooth was toggled off or a scan permission was revoked.
+     * Every one of those used to retire auto-reconnect for the rest of the
+     * process — in exactly the situation it has to survive, because a user who
+     * has walked out of range fails every attempt until they walk back.
+     */
+    private suspend fun superviseReconnect(immediate: Boolean) {
+        var nextAttemptAt = System.currentTimeMillis() + if (immediate) {
+            IMMEDIATE_RECONNECT_MS
+        } else {
+            ChargeSessionLogic.reconnectDelayMs(reconnectAttempt)
+        }
+        var attemptInFlight = false
+        var busySince = 0L
+        try {
+            while (true) {
+                if (userRequestedDisconnect) break
+                if (!SessionLeaseStore.hasOpenLease) break
+                val state = _bleTransport?.connectionState?.value ?: break
+                if (state == ConnectionState.Connected) break
+
+                val now = System.currentTimeMillis()
+                if (BleConnectionPolicy.isLinkBusy(state)) {
+                    attemptInFlight = true
+                    if (busySince == 0L) busySince = now
+                    if (ChargeSessionLogic.reconnectAttemptNeedsRestart(state, busySince, now)) {
+                        LogRepository.append(
+                            "Gateway: Session reconnect stuck in $state — restarting attempt",
+                        )
+                        _bleTransport?.disconnect()
+                        busySince = 0L
+                        attemptInFlight = false
+                        nextAttemptAt = now + ChargeSessionLogic.reconnectDelayMs(reconnectAttempt)
+                    }
+                } else if (attemptInFlight) {
+                    // Start the backoff from when the attempt gave up, not from
+                    // when it began — a scan window alone outlasts the ceiling.
+                    attemptInFlight = false
+                    busySince = 0L
+                    nextAttemptAt = now + ChargeSessionLogic.reconnectDelayMs(reconnectAttempt)
+                } else if (now >= nextAttemptAt) {
+                    reconnectAttempt = (reconnectAttempt + 1).coerceAtMost(MAX_RECONNECT_ATTEMPT)
+                    nextAttemptAt = now + ChargeSessionLogic.reconnectDelayMs(reconnectAttempt)
+                    LogRepository.append(
+                        "Gateway: Session reconnect attempt $reconnectAttempt" +
+                            " for tid=${SessionLeaseStore.open?.transactionId}",
+                    )
+                    resumeSessionLink()
+                }
+                delay(RECONNECT_TICK_MS)
+            }
+        } finally {
+            _isReconnecting.value = false
         }
     }
 
@@ -403,11 +539,25 @@ object GatewayManager {
             scope.launch {
                 while (true) {
                     delay(5_000)
+                    val now = System.currentTimeMillis()
                     val observed = _hardwareSession.value.observedAtOrZero
-                    if (observed <= 0L) continue
-                    if (System.currentTimeMillis() - observed > HardwareSession.STALE_AFTER_MS) {
+                    if (observed > 0L && now - observed > HardwareSession.STALE_AFTER_MS) {
                         LogRepository.append("Gateway: Charger evidence stale — hardware state unknown")
                         _hardwareSession.value = HardwareSession.Unknown
+                    }
+                    val bleState = _bleTransport?.connectionState?.value
+                    if (ChargeSessionLogic.shouldDropSilentGatt(
+                            bleReady = bleState == ConnectionState.Connected,
+                            hasOpenLease = SessionLeaseStore.hasOpenLease,
+                            lastBlePacketAtMs = lastBlePacketAt,
+                            nowMs = now,
+                        )
+                    ) {
+                        LogRepository.append(
+                            "Gateway: GATT connected but silent during owned session — " +
+                                "dropping dead handle to reconnect",
+                        )
+                        _bleTransport?.disconnect()
                     }
                 }
             }
@@ -438,7 +588,9 @@ object GatewayManager {
         scope.launch {
             bleTransport.connectionState.collect { state ->
                 if (state == ConnectionState.Disconnected || state == ConnectionState.Failed) {
-                    // Link is gone, so we no longer know what the charger is doing.
+                    // Link is gone, so we no longer know what the charger is doing
+                    // over GATT. MQTT idle is ignored separately while the lease
+                    // is open, so this Unknown holds the session instead of ending it.
                     _hardwareSession.value = HardwareSession.Unknown
                 }
                 if (BleConnectionPolicy.shouldReconnectAfterDrop(
@@ -451,14 +603,32 @@ object GatewayManager {
                     scheduleReconnect()
                     return@collect
                 }
+                if (state == ConnectionState.Scanning || state == ConnectionState.Connecting) {
+                    // Supervisor is still working. Do not clear isReconnecting:
+                    // that made the card flicker to "session still running" and
+                    // look like auto-reconnect had given up.
+                    if (reconnectJob?.isActive == true) _isReconnecting.value = true
+                    return@collect
+                }
                 if (state != ConnectionState.Connected) {
-                    _isReconnecting.value = false
+                    if (reconnectJob?.isActive != true) _isReconnecting.value = false
                     return@collect
                 }
 
                 reconnectAttempt = 0
                 reconnectJob?.cancel()
                 _isReconnecting.value = false
+                linkRestoredAt = System.currentTimeMillis()
+                lastBlePacketAt = linkRestoredAt
+
+                // The charger re-sends the frame it was waiting to have acked
+                // when we vanished — same queue entry, so same message id and
+                // action. That resend is the only evidence we get that a session
+                // is still running, and the retransmit filter was throwing it
+                // away as a duplicate, leaving the charger state permanently
+                // Unknown after every reconnect.
+                retransmits.reset()
+
                 val address = bleTransport.connectedAddress.value
                 if (address != null) {
                     LogRepository.append("Bridge: BLE Connected ($address)")
@@ -517,6 +687,7 @@ object GatewayManager {
         scope.launch {
             bleTransport.incoming.collect { payload ->
                 lastHeartbeatTime = System.currentTimeMillis()
+                lastBlePacketAt = lastHeartbeatTime
                 if (!_isDeviceOnline.value) {
                     LogRepository.append("Gateway: Device ${_currentDeviceId.value} is ONLINE via BLE")
                     _isDeviceOnline.value = true
@@ -738,10 +909,26 @@ object GatewayManager {
 
         val previous = _hardwareSession.value
         val now = System.currentTimeMillis()
+        val bleReady = _bleTransport?.connectionState?.value == ConnectionState.Connected
         // Heartbeat/StatusNotification idle right after StartTransaction is often a
         // queued frame or a low-current settle reading (c≈0 while the relay closes).
         // Treating it as proof the session ended is what showed "Charging finished"
         // / disconnected the phone a second after Start. StopTransaction is definite.
+        if (observed is HardwareSession.Idle &&
+            ChargeSessionLogic.shouldHoldThroughIdleEvidence(
+                hasOpenLease = SessionLeaseStore.hasOpenLease,
+                bleReady = bleReady,
+                isStopTransaction = action == "StopTransaction",
+                msSinceReconnect = now - linkRestoredAt,
+                reconnectGraceMs = SessionReconciler.START_GRACE_MS,
+            )
+        ) {
+            LogRepository.append(
+                "Gateway: Ignoring $action idle — holding owned session " +
+                    "(bleReady=$bleReady, ${now - linkRestoredAt}ms since reconnect)",
+            )
+            return
+        }
         if (observed is HardwareSession.Idle &&
             previous is HardwareSession.Charging &&
             action != "StopTransaction" &&

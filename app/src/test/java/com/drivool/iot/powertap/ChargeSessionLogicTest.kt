@@ -41,6 +41,70 @@ class ChargeSessionLogicTest {
     }
 
     @Test
+    fun userTapRestartsAHalfOpenAttemptButNotALiveLink() {
+        // The session-resume retry parks the transport in Scanning/Connecting
+        // for most of its cycle, so that is where a tap normally lands. Treating
+        // it as "already connecting" made the Connect button do nothing.
+        assertTrue(ChargeSessionLogic.shouldRestartAttemptForUser(ConnectionState.Scanning))
+        assertTrue(ChargeSessionLogic.shouldRestartAttemptForUser(ConnectionState.Connecting))
+        assertFalse(ChargeSessionLogic.shouldRestartAttemptForUser(ConnectionState.Connected))
+        assertFalse(ChargeSessionLogic.shouldRestartAttemptForUser(ConnectionState.Disconnected))
+        assertFalse(ChargeSessionLogic.shouldRestartAttemptForUser(ConnectionState.Failed))
+    }
+
+    @Test
+    fun leaseKeepsTheIdTheChargerWasGiven() {
+        // The charger only ever knows the tid we put in RemoteStart, so a cloud
+        // ack naming a different one cannot be honoured: adopting it builds a
+        // lease no charger will confirm, which reads as someone else's session
+        // and gets dropped — taking Stop and auto-reconnect with it.
+        assertEquals(
+            "T100",
+            ChargeSessionLogic.leaseTransactionIdAfterAck(
+                proposedTid = "T100",
+                serverTid = "42",
+                hardwareTid = "T100",
+            ),
+        )
+        assertEquals(
+            "T100",
+            ChargeSessionLogic.leaseTransactionIdAfterAck(
+                proposedTid = "T100",
+                serverTid = "42",
+                hardwareTid = null,
+            ),
+        )
+    }
+
+    @Test
+    fun leaseFollowsTheServerOnlyWhenTheChargerIsRunningThatId() {
+        assertEquals(
+            "42",
+            ChargeSessionLogic.leaseTransactionIdAfterAck(
+                proposedTid = "T100",
+                serverTid = "42",
+                hardwareTid = "42",
+            ),
+        )
+    }
+
+    @Test
+    fun leaseIsUnchangedByAnEmptyOrMatchingAck() {
+        assertEquals(
+            "T100",
+            ChargeSessionLogic.leaseTransactionIdAfterAck("T100", null, "T100"),
+        )
+        assertEquals(
+            "T100",
+            ChargeSessionLogic.leaseTransactionIdAfterAck("T100", "  ", null),
+        )
+        assertEquals(
+            "T100",
+            ChargeSessionLogic.leaseTransactionIdAfterAck("T100", "T100", "T100"),
+        )
+    }
+
+    @Test
     fun scanCache_staleAfterDisconnectWindow() {
         assertTrue(ChargeSessionLogic.isScanResultFresh(1_000L, 3_000L))
         assertFalse(ChargeSessionLogic.isScanResultFresh(1_000L, 1_000L + ChargeSessionLogic.SCAN_CACHE_FRESH_MS))
@@ -259,10 +323,164 @@ class ChargeSessionLogicTest {
     @Test
     fun ownsRunningSession_requiresMatchingTransactionIds() {
         assertTrue(ChargeSessionLogic.ownsRunningSession("T1", "T1"))
+        assertTrue(ChargeSessionLogic.ownsRunningSession(" T1 ", "T1"))
         assertFalse(ChargeSessionLogic.ownsRunningSession("T1", "T2"))
         assertFalse(ChargeSessionLogic.ownsRunningSession(null, "T1"))
         assertFalse(ChargeSessionLogic.ownsRunningSession("T1", null))
         assertFalse(ChargeSessionLogic.ownsRunningSession("", "T1"))
+    }
+
+    @Test
+    fun accountOwnsLiveSession_ignoresHeartbeatAndTidRename() {
+        // Walk-away: heartbeat is stale, charger may have a different tid than
+        // the one we proposed. Ownership of the charge must still hold.
+        assertTrue(
+            ChargeSessionLogic.accountOwnsLiveSession(
+                currentAccount = "alice",
+                ownerAccount = "alice",
+                cloudState = DeviceState.STATE_CHARGING,
+            ),
+        )
+        assertFalse(
+            ChargeSessionLogic.accountOwnsLiveSession(
+                currentAccount = "alice",
+                ownerAccount = "bob",
+                cloudState = DeviceState.STATE_CHARGING,
+            ),
+        )
+        assertFalse(
+            ChargeSessionLogic.accountOwnsLiveSession(
+                currentAccount = "guest",
+                ownerAccount = "guest",
+                cloudState = DeviceState.STATE_CHARGING,
+            ),
+        )
+    }
+
+    @Test
+    fun idleEvidenceIsHeldWhileGattIsDownOrJustRestored() {
+        val grace = 20_000L
+        assertTrue(
+            ChargeSessionLogic.shouldHoldThroughIdleEvidence(
+                hasOpenLease = true,
+                bleReady = false,
+                isStopTransaction = false,
+                msSinceReconnect = 60_000L,
+                reconnectGraceMs = grace,
+            ),
+        )
+        assertTrue(
+            ChargeSessionLogic.shouldHoldThroughIdleEvidence(
+                hasOpenLease = true,
+                bleReady = true,
+                isStopTransaction = false,
+                msSinceReconnect = 1_000L,
+                reconnectGraceMs = grace,
+            ),
+        )
+        assertFalse(
+            ChargeSessionLogic.shouldHoldThroughIdleEvidence(
+                hasOpenLease = true,
+                bleReady = true,
+                isStopTransaction = false,
+                msSinceReconnect = grace,
+                reconnectGraceMs = grace,
+            ),
+        )
+        assertFalse(
+            ChargeSessionLogic.shouldHoldThroughIdleEvidence(
+                hasOpenLease = true,
+                bleReady = false,
+                isStopTransaction = true,
+                msSinceReconnect = 0L,
+                reconnectGraceMs = grace,
+            ),
+        )
+        assertFalse(
+            ChargeSessionLogic.shouldHoldThroughIdleEvidence(
+                hasOpenLease = false,
+                bleReady = false,
+                isStopTransaction = false,
+                msSinceReconnect = 0L,
+                reconnectGraceMs = grace,
+            ),
+        )
+    }
+
+    @Test
+    fun reconnectAttemptRestartsWhenStuckScanningOrConnecting() {
+        val started = 1_000L
+        val stale = ChargeSessionLogic.RECONNECT_ATTEMPT_STALE_MS
+        assertTrue(
+            ChargeSessionLogic.reconnectAttemptNeedsRestart(
+                ConnectionState.Scanning, started, started + stale,
+            ),
+        )
+        assertTrue(
+            ChargeSessionLogic.reconnectAttemptNeedsRestart(
+                ConnectionState.Connecting, started, started + stale,
+            ),
+        )
+        assertFalse(
+            ChargeSessionLogic.reconnectAttemptNeedsRestart(
+                ConnectionState.Scanning, started, started + stale - 1,
+            ),
+        )
+        assertFalse(
+            ChargeSessionLogic.reconnectAttemptNeedsRestart(
+                ConnectionState.Connected, started, started + stale,
+            ),
+        )
+        assertFalse(
+            ChargeSessionLogic.reconnectAttemptNeedsRestart(
+                ConnectionState.Scanning, 0L, started + stale,
+            ),
+        )
+    }
+
+    @Test
+    fun silentGattDuringOwnedSessionIsDropped() {
+        val last = 1_000L
+        assertTrue(
+            ChargeSessionLogic.shouldDropSilentGatt(
+                bleReady = true,
+                hasOpenLease = true,
+                lastBlePacketAtMs = last,
+                nowMs = last + ChargeSessionLogic.HEARTBEAT_STALE_MS,
+            ),
+        )
+        assertFalse(
+            ChargeSessionLogic.shouldDropSilentGatt(
+                bleReady = true,
+                hasOpenLease = true,
+                lastBlePacketAtMs = last,
+                nowMs = last + 1_000L,
+            ),
+        )
+        assertFalse(
+            ChargeSessionLogic.shouldDropSilentGatt(
+                bleReady = true,
+                hasOpenLease = false,
+                lastBlePacketAtMs = last,
+                nowMs = last + ChargeSessionLogic.HEARTBEAT_STALE_MS,
+            ),
+        )
+        assertFalse(
+            ChargeSessionLogic.shouldDropSilentGatt(
+                bleReady = false,
+                hasOpenLease = true,
+                lastBlePacketAtMs = last,
+                nowMs = last + ChargeSessionLogic.HEARTBEAT_STALE_MS,
+            ),
+        )
+    }
+
+    @Test
+    fun stopTargetsTheLiveHardwareId() {
+        assertEquals("T2", ChargeSessionLogic.stopTargetTransactionId("T1", "T2"))
+        assertEquals("T1", ChargeSessionLogic.stopTargetTransactionId("T1", null))
+        assertEquals("T1", ChargeSessionLogic.stopTargetTransactionId("T1", "  "))
+        assertEquals("T1", ChargeSessionLogic.stopTargetTransactionId("T1", "T1"))
     }
 
     @Test

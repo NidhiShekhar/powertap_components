@@ -178,8 +178,14 @@ class BleTransport(
             log("Scan skipped — already connected/connecting to $targetAddress")
             return
         }
+        // A previous scan left running makes Android return
+        // SCAN_FAILED_ALREADY_STARTED, which wedged auto-reconnect: Failed
+        // fires, the supervisor retries, startScan no-ops/fails again.
+        if (scanning) stopScan()
         // Direct connectGatt without a *fresh* advertisement is why reconnect
         // after a mid-charge drop used to report Connected on a dead handle.
+        // Session resume invalidates the cache on disconnect, so this shortcut
+        // only fires for a pairing that just saw the charger advertise.
         if (targetAddress != null) {
             val now = SystemClock.elapsedRealtime()
             val cached = _discoveredDevices.value.firstOrNull {
@@ -195,6 +201,10 @@ class BleTransport(
         }
         this.targetAddress = targetAddress
         val thisScan = ++scanGeneration
+        // Scanning means we are certainly not on a link. Any address left over
+        // from an earlier attempt would make the next connect look like a
+        // duplicate of it and be skipped.
+        setConnectedAddress(null)
 
         val filters = listOf(
             ScanFilter.Builder().setServiceUuid(ParcelUuid(PtContract.SERVICE_UUID)).build(),
@@ -323,6 +333,7 @@ class BleTransport(
         connectGeneration++
         stopScan()
         waitingForCccd = false
+        invalidateScanCache()
         val g = gatt
         try {
             if (hasConnectPermission()) g?.disconnect()
@@ -338,11 +349,46 @@ class BleTransport(
         setState(ConnectionState.Disconnected)
     }
 
+    /**
+     * Advertisements seen *before* this disconnect must not shortcut the next
+     * connect. The 8s cache window is why the first auto-reconnect after walking
+     * out of range called connectGatt without scanning and got a dead handle —
+     * lastSeen was still "fresh" from the session that just dropped.
+     */
+    private fun invalidateScanCache() {
+        val current = _discoveredDevices.value
+        if (current.isEmpty()) return
+        _discoveredDevices.value = current.map { it.copy(lastSeenElapsedMs = 0L) }
+    }
+
     private fun closeGatt(g: BluetoothGatt?) {
         if (g == null) return
         try {
             if (hasConnectPermission()) g.close()
         } catch (e: SecurityException) { }
+    }
+
+    /**
+     * Give up on [g] and leave the transport in a state a later connect can use.
+     *
+     * Reporting Failed while still holding the target address and an open GATT
+     * handle is what wedged reconnect: the duplicate-connect guard matches on
+     * that address, so the next attempt — automatic or a user tap — was waved
+     * through as a duplicate of a connection that no longer existed.
+     */
+    private fun fail(g: BluetoothGatt?, reason: String) {
+        log("BLE connect failed: $reason")
+        connectGeneration++
+        dataChar = null
+        waitingForCccd = false
+        invalidateScanCache()
+        if (g != null && g === gatt) gatt = null
+        try {
+            if (hasConnectPermission()) g?.disconnect()
+        } catch (e: SecurityException) { }
+        closeGatt(g)
+        setConnectedAddress(null)
+        setState(ConnectionState.Failed)
     }
 
     private fun cleanupCurrent(from: BluetoothGatt?) {
@@ -373,6 +419,7 @@ class BleTransport(
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     log("BLE Disconnected (status: $status)")
+                    invalidateScanCache()
                     cleanupCurrent(g)
                     setState(ConnectionState.Disconnected)
                 }
@@ -389,7 +436,7 @@ class BleTransport(
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
             if (g !== gatt) return
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                setState(ConnectionState.Failed)
+                fail(g, "service discovery returned status $status")
                 return
             }
 
@@ -397,7 +444,7 @@ class BleTransport(
             val characteristic = service?.getCharacteristic(PtContract.DATA_CHAR_UUID)
 
             if (characteristic == null) {
-                setState(ConnectionState.Failed)
+                fail(g, "PowerTap data characteristic missing")
                 return
             }
 
