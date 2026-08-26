@@ -1164,10 +1164,15 @@ class HomeFragment : Fragment() {
 
         currentState = DeviceState.STATE_STOPPING
         commandStartTime = System.currentTimeMillis()
-        startProgressMessage = "Stopping..."
+        startProgressMessage = if (bleOk) {
+            "Stopping…"
+        } else {
+            "Stop queued — reconnect to finish"
+        }
         updateOnlineStatus()
 
         sb.showProgress(startProgressMessage)
+        GatewayManager.latestMeterData.value?.let { updateLCD(it) }
         FirebaseApiManager.stopCharging(deviceId, tid,
             onResult = {
                 LogRepository.append("Firebase: Stop Charging Ack: $it")
@@ -1867,7 +1872,11 @@ class HomeFragment : Fragment() {
             ConnectionState.Disconnected -> when {
                 GatewayManager.isReconnecting.value && hasSession -> ConnectionCardView(
                     title = "Reconnecting to your session…",
-                    detail = "Charging continues on the charger. We need the link back to stop it.",
+                    detail = if (currentState == DeviceState.STATE_STOPPING) {
+                        "Stop is queued. Reconnecting so the charger can receive it."
+                    } else {
+                        "Charging continues on the charger. We need the link back to stop it."
+                    },
                     icon = "🔄",
                     color = R.color.status_warning,
                     // Never hide this while a session is live: the retry can only
@@ -1876,8 +1885,16 @@ class HomeFragment : Fragment() {
                     action = "Retry now",
                 )
                 hasSession -> ConnectionCardView(
-                    title = "Session still running",
-                    detail = "Reconnect to $name so you can stop charging.",
+                    title = if (currentState == DeviceState.STATE_STOPPING) {
+                        "Stop queued"
+                    } else {
+                        "Session still running"
+                    },
+                    detail = if (currentState == DeviceState.STATE_STOPPING) {
+                        "Reconnect to $name to actually stop charging."
+                    } else {
+                        "Reconnect to $name so you can stop charging."
+                    },
                     icon = "⚠️",
                     color = R.color.status_warning,
                     action = "Reconnect",
@@ -2036,6 +2053,8 @@ class HomeFragment : Fragment() {
         val charging = isChargingUi(currentState)
         val sessionConfirmed = currentState == DeviceState.STATE_CHARGING ||
             currentState == DeviceState.STATE_STARTED
+        val stopQueuedOffline = currentState == DeviceState.STATE_STOPPING &&
+            !ChargeSessionLogic.isBleReady(GatewayManager.bleTransport.connectionState.value)
         
         val voltageStr = String.format(Locale.getDefault(), "%.1fV", data.voltage)
         val energyStr = MeterUnits.formatEnergyWh(data.energy)
@@ -2054,6 +2073,10 @@ class HomeFragment : Fragment() {
                 if (chargingUiStartedAt == 0L) chargingUiStartedAt = startedAt
                 durationLabel = "DURATION"
                 durationStr = MeterUnits.formatDuration(System.currentTimeMillis() - startedAt)
+            } else if (stopQueuedOffline) {
+                // Short enough for the LCD cell; the slider carries the full sentence.
+                durationLabel = "STOP"
+                durationStr = "QUEUED"
             } else {
                 durationLabel = "STATUS"
                 durationStr = if (currentState == DeviceState.STATE_STOPPING) "STOPPING" else "WAIT"
@@ -2119,6 +2142,17 @@ class HomeFragment : Fragment() {
 
             // A session *this phone owns* keeps Stop available even if the link
             // looks flaky. "Online" only matters when we want to *start*.
+            if (currentState == DeviceState.STATE_STOPPING && commandInFlight) {
+                // Keep the queued-stop copy visible until GATT is back; otherwise
+                // "Stopping…" looks like the charger already has the command.
+                startProgressMessage = if (!bleConnected) {
+                    "Stop queued — reconnect to finish"
+                } else if (startProgressMessage.startsWith("Stop queued")) {
+                    "Stopping…"
+                } else {
+                    startProgressMessage
+                }
+            }
             if (ChargeSessionLogic.sliderLocked(renderState, commandInFlight)) {
                 sb.activate(true)
                 sb.showProgress(startProgressMessage)
