@@ -57,8 +57,17 @@ import java.util.Locale
 class HomeFragment : Fragment() {
 
     private val TAG = "HomeFragment"
-    private var time = 60
+    /** Charge-limit duration in seconds (sent as RemoteStart `time`). */
+    private var timeSeconds = TIME_DEFAULT_SEC
     private var units = 10
+
+    private companion object {
+        /** Slider / +/- step so short test charges (30s, 60s) are easy to dial. */
+        const val TIME_STEP_SEC = 5
+        const val TIME_DEFAULT_SEC = 60
+        const val TIME_MAX_SEC = 48 * 3600
+        const val UNITS_MAX_KWH = 100
+    }
     private var deviceId: String = ""
     private var currentState: Int = DeviceState.STATE_AVAILABLE
 
@@ -282,16 +291,16 @@ class HomeFragment : Fragment() {
             override fun onTabReselected(tab: TabLayout.Tab?) {}
         })
 
-        // Slider logic
+        // Slider logic — Set Time is in seconds (firmware target = time * 1000 ms).
         seekBar?.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                 if (fromUser) {
                     val currentTab = tabLayout?.selectedTabPosition ?: 0
                     if (currentTab == 1) { // SET TIME
-                        time = progress * 5
+                        timeSeconds = (progress * TIME_STEP_SEC).coerceIn(TIME_STEP_SEC, TIME_MAX_SEC)
                         updateTimeUI()
                     } else if (currentTab == 2) { // SET UNITS
-                        units = progress
+                        units = progress.coerceIn(1, UNITS_MAX_KWH)
                         updateUnitsUI()
                     }
                 }
@@ -303,8 +312,8 @@ class HomeFragment : Fragment() {
         btnMinus?.setOnClickListener {
             val currentTab = tabLayout?.selectedTabPosition ?: 0
             if (currentTab == 1) {
-                time = maxOf(5, time - 5)
-                seekBar?.progress = time / 5
+                timeSeconds = maxOf(TIME_STEP_SEC, timeSeconds - TIME_STEP_SEC)
+                seekBar?.progress = timeSeconds / TIME_STEP_SEC
                 updateTimeUI()
             } else if (currentTab == 2) {
                 units = maxOf(1, units - 1)
@@ -316,11 +325,11 @@ class HomeFragment : Fragment() {
         btnPlus?.setOnClickListener {
             val currentTab = tabLayout?.selectedTabPosition ?: 0
             if (currentTab == 1) {
-                time += 5
-                seekBar?.progress = time / 5
+                timeSeconds = minOf(TIME_MAX_SEC, timeSeconds + TIME_STEP_SEC)
+                seekBar?.progress = timeSeconds / TIME_STEP_SEC
                 updateTimeUI()
             } else if (currentTab == 2) {
-                units += 1
+                units = minOf(UNITS_MAX_KWH, units + 1)
                 seekBar?.progress = units
                 updateUnitsUI()
             }
@@ -895,14 +904,20 @@ class HomeFragment : Fragment() {
         if (sb.isLocked) return
         GatewayManager.noteUserAction()
 
+        // Packet contract from pwt_firmware RemoteStart (mqtt.cpp):
+        //   full   → { mode:"full", tid }
+        //   time   → { mode:"time", tid, time:<seconds> }   // FW: *1000 → ms
+        //   energy → { mode:"energy", tid, energy:<mWh> }   // FW: compare to energyActive as-is
+        // Tab label stays "SET UNITS"; wire mode must be "energy".
         val mode = when (tabLayout?.selectedTabPosition) {
             1 -> "time"
-            2 -> "units"
+            2 -> "energy"
             else -> "full"
         }
         val value = when (mode) {
-            "time" -> time
-            "units" -> units
+            "time" -> timeSeconds
+            // UI is kWh; meter / iTargetValue are milli-Wh (same scale as MQTT "e").
+            "energy" -> units * 1_000_000
             else -> null
         }
 
@@ -1019,8 +1034,8 @@ class HomeFragment : Fragment() {
 
         val ocppStart = buildString {
             append("[2,\"$msgId\",\"RemoteStart\",{\"mode\":\"$mode\",\"tid\":\"$tid\"")
-            if (mode == "time") append(",\"time\":$time")
-            if (mode == "units") append(",\"units\":$units")
+            if (mode == "time" && value != null) append(",\"time\":$value")
+            if (mode == "energy" && value != null) append(",\"energy\":$value")
             append("}]")
         }
         val bleOk = GatewayManager.sendToCharger(ocppStart)
@@ -1495,8 +1510,8 @@ class HomeFragment : Fragment() {
                 txtSubtitle?.visibility = View.GONE
                 txtIcon?.visibility = View.GONE
                 sliderSection?.visibility = View.VISIBLE
-                seekBar?.max = 576
-                seekBar?.progress = time / 5
+                seekBar?.max = TIME_MAX_SEC / TIME_STEP_SEC
+                seekBar?.progress = timeSeconds / TIME_STEP_SEC
                 updateTimeUI()
             }
             2 -> {
@@ -1504,7 +1519,7 @@ class HomeFragment : Fragment() {
                 txtSubtitle?.visibility = View.GONE
                 txtIcon?.visibility = View.GONE
                 sliderSection?.visibility = View.VISIBLE
-                seekBar?.max = 100
+                seekBar?.max = UNITS_MAX_KWH
                 seekBar?.progress = units
                 updateUnitsUI()
             }
@@ -2036,17 +2051,30 @@ class HomeFragment : Fragment() {
     }
 
     private fun updateTimeUI() {
-        val hours = time / 60
-        val mins = time % 60
-        txtValue?.text = String.format(Locale.getDefault(), "%d:%02d", hours, mins)
-        val energy = (time / 60f) * 3
-        txtInfo?.text = String.format(Locale.getDefault(), "Estimated energy gain: ~ %d KWh\nCharging will stop at %d hour, %d min", energy.toInt(), hours, mins)
+        val hours = timeSeconds / 3600
+        val mins = (timeSeconds % 3600) / 60
+        val secs = timeSeconds % 60
+        txtValue?.text = String.format(Locale.getDefault(), "%d:%02d:%02d", hours, mins, secs)
+        val energy = (timeSeconds / 3600f) * 3f
+        txtInfo?.text = String.format(
+            Locale.getDefault(),
+            "Estimated energy gain: ~ %.1f kWh\nCharging will stop after %d h, %d min, %d sec",
+            energy,
+            hours,
+            mins,
+            secs,
+        )
     }
 
     private fun updateUnitsUI() {
-        txtValue?.text = String.format(Locale.getDefault(), "%d KWh", units)
+        txtValue?.text = String.format(Locale.getDefault(), "%d kWh", units)
         val estimatedHours = units / 3
-        txtInfo?.text = String.format(Locale.getDefault(), "Estimated duration: ~ %d hours\nCharging will stop at %d KWh", estimatedHours, units)
+        txtInfo?.text = String.format(
+            Locale.getDefault(),
+            "Estimated duration: ~ %d hours\nCharging will stop at %d kWh",
+            estimatedHours,
+            units,
+        )
     }
 
     private fun updateLCD(data: com.drivool.iot.powertap.contract.MeterData) {

@@ -29,8 +29,8 @@ class OnboardingActivity : AppCompatActivity() {
         val pages = listOf(
             OnboardingPage("⚡", "Welcome to PowerTap", "The smartest way to manage your EV charging. Connect, monitor, and control with ease."),
             OnboardingPage("🔋", "Full Charge", "Charge your vehicle to its maximum capacity. The session stops automatically when 100% is reached."),
-            OnboardingPage("⏲️", "Set Time", "Control your schedule. Set a specific duration in hours and minutes for your charging session."),
-            OnboardingPage("🔌", "Set Units", "Budget your energy. Define a precise amount of KWh (units) you want to consume."),
+            OnboardingPage("⏲️", "Set Time", "Control your schedule. Set a specific duration in hours, minutes, and seconds for your charging session."),
+            OnboardingPage("🔌", "Set Units", "Budget your energy. Define a precise amount of kWh (units) you want to consume."),
             OnboardingPage("💡", "Pro Tip", "For the best experience, avoid pairing PowerTap via your phone's Bluetooth settings. If already paired, please 'Unpair' or 'Forget' it before using the app.")
         )
 

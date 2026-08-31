@@ -115,8 +115,9 @@ object FirebaseApiManager {
         val params = mutableMapOf<String, Any>("mode" to mode)
         params["tid"] = tid
         if (value != null) {
+            // Matches pwt_firmware RemoteStart: time=seconds, energy=milli-Wh (no FW conversion).
             if (mode == "time") params["time"] = value
-            else if (mode == "units") params["units"] = value
+            else if (mode == "energy") params["energy"] = value
         }
         // Bind the live session to this login before/while the command runs so
         // a reinstall can reclaim Stop without phone-local lease data.

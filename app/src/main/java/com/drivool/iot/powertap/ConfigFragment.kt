@@ -4,12 +4,12 @@ import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
 import androidx.fragment.app.Fragment
 import com.google.android.material.tabs.TabLayout
+import java.util.Locale
 
 class ConfigFragment : Fragment() {
 
@@ -24,8 +24,16 @@ class ConfigFragment : Fragment() {
     private lateinit var btnPlus: View
     private lateinit var seekBar: SeekBar
 
-    private var time = 60
+    /** Charge-limit duration in seconds (matches HomeFragment / firmware). */
+    private var timeSeconds = TIME_DEFAULT_SEC
     private var units = 10
+
+    private companion object {
+        const val TIME_STEP_SEC = 5
+        const val TIME_DEFAULT_SEC = 60
+        const val TIME_MAX_SEC = 48 * 3600
+        const val UNITS_MAX_KWH = 100
+    }
 
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?,
@@ -79,24 +87,24 @@ class ConfigFragment : Fragment() {
         sliderSection.visibility = View.VISIBLE
         txtTitle.text = "SET TIME"
         updateTimeUI()
-        seekBar.max = 576
-        seekBar.progress = time / 5
+        seekBar.max = TIME_MAX_SEC / TIME_STEP_SEC
+        seekBar.progress = timeSeconds / TIME_STEP_SEC
         seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                time = progress * 5
+                timeSeconds = (progress * TIME_STEP_SEC).coerceIn(TIME_STEP_SEC, TIME_MAX_SEC)
                 updateTimeUI()
             }
             override fun onStartTrackingTouch(seekBar: SeekBar?) {}
             override fun onStopTrackingTouch(seekBar: SeekBar?) {}
         })
         btnMinus.setOnClickListener {
-            time = maxOf(5, time - 5)
-            seekBar.progress = time / 5
+            timeSeconds = maxOf(TIME_STEP_SEC, timeSeconds - TIME_STEP_SEC)
+            seekBar.progress = timeSeconds / TIME_STEP_SEC
             updateTimeUI()
         }
         btnPlus.setOnClickListener {
-            time += 5
-            seekBar.progress = time / 5
+            timeSeconds = minOf(TIME_MAX_SEC, timeSeconds + TIME_STEP_SEC)
+            seekBar.progress = timeSeconds / TIME_STEP_SEC
             updateTimeUI()
         }
     }
@@ -107,11 +115,11 @@ class ConfigFragment : Fragment() {
         sliderSection.visibility = View.VISIBLE
         txtTitle.text = "SET UNITS"
         updateUnitsUI()
-        seekBar.max = 100
+        seekBar.max = UNITS_MAX_KWH
         seekBar.progress = units
         seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                units = progress
+                units = progress.coerceIn(1, UNITS_MAX_KWH)
                 updateUnitsUI()
             }
             override fun onStartTrackingTouch(seekBar: SeekBar?) {}
@@ -123,23 +131,36 @@ class ConfigFragment : Fragment() {
             updateUnitsUI()
         }
         btnPlus.setOnClickListener {
-            units += 1
+            units = minOf(UNITS_MAX_KWH, units + 1)
             seekBar.progress = units
             updateUnitsUI()
         }
     }
 
     private fun updateTimeUI() {
-        val hours = time / 60
-        val mins = time % 60
-        txtValue.text = "$hours:${mins.toString().padStart(2, '0')}"
-        val energy = (time / 60f) * 3
-        txtInfo.text = "Estimated energy gain: ~ ${energy.toInt()} KWh\nCharging will stop at $hours hour, $mins min"
+        val hours = timeSeconds / 3600
+        val mins = (timeSeconds % 3600) / 60
+        val secs = timeSeconds % 60
+        txtValue.text = String.format(Locale.getDefault(), "%d:%02d:%02d", hours, mins, secs)
+        val energy = (timeSeconds / 3600f) * 3f
+        txtInfo.text = String.format(
+            Locale.getDefault(),
+            "Estimated energy gain: ~ %.1f kWh\nCharging will stop after %d h, %d min, %d sec",
+            energy,
+            hours,
+            mins,
+            secs,
+        )
     }
 
     private fun updateUnitsUI() {
-        txtValue.text = "$units KWh"
+        txtValue.text = String.format(Locale.getDefault(), "%d kWh", units)
         val estimatedHours = units / 3
-        txtInfo.text = "Estimated duration: ~ $estimatedHours hours\nCharging will stop at $units KWh"
+        txtInfo.text = String.format(
+            Locale.getDefault(),
+            "Estimated duration: ~ %d hours\nCharging will stop at %d kWh",
+            estimatedHours,
+            units,
+        )
     }
 }
